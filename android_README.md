@@ -1,6 +1,6 @@
 # Android Standalone Setup
 
-This project can run standalone on Android through Termux. The Android path avoids Playwright/Chromium and uses `android_collect.py`, which reads CS2Tokens paginated HTML directly, then fetches each sticker's metadata/history JSON.
+This project can run standalone on Android through Termux. The Android path avoids Playwright/Chromium and uses `android_collect.py`, which reads CS2Tokens paginated HTML directly with Python's standard library, then fetches each sticker's metadata/history JSON.
 
 ## Files
 
@@ -48,7 +48,7 @@ Make sure your `data/scores.csv` is present because the analyzer uses your manua
 bash android_setup.sh
 ```
 
-This installs Python, numpy/pandas, and BeautifulSoup from Termux packages. The setup script intentionally avoids global `pip` because Termux blocks it and global pip can break the package-managed Python.
+This installs Python plus numpy/pandas from Termux packages. The setup script intentionally avoids global `pip` because Termux blocks it and global pip can break the package-managed Python. No BeautifulSoup package is required.
 
 If you see `Installing pip packages is forbidden`, update this project and rerun:
 
@@ -56,7 +56,7 @@ If you see `Installing pip packages is forbidden`, update this project and rerun
 bash android_setup.sh
 ```
 
-Do not run `pip install pandas` or `pip install beautifulsoup4` globally in Termux.
+Do not run `pip install pandas` globally in Termux.
 
 ## 4. Run The Full Pipeline
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+from html.parser import HTMLParser
 import json
 import math
 import re
@@ -15,14 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from bs4 import BeautifulSoup
-
 
 DEFAULT_URL = "https://cs2tokens.com/browse?sort=price-asc"
 DEFAULT_VARIANTS = "Paper,Foil,Holo,Gold"
 USER_AGENT = "Mozilla/5.0 (Linux; Android; cs2-sticker-tracker/1.0)"
-METADATA_TIMEOUT = 25
-METADATA_RETRIES = 5
+METADATA_TIMEOUT = 35
+METADATA_RETRIES = 6
 METADATA_RETRY_BASE_DELAY = 1.75
 
 OUT_DIR = Path("data/snapshots")
@@ -174,44 +173,152 @@ def fetch_json(url: str) -> Any:
     return json.loads(fetch_bytes(url).decode("utf-8"))
 
 
-def total_items_from_soup(soup: BeautifulSoup, fallback: int) -> int:
-    text = soup.get_text(" ", strip=True)
+def attr_dict(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+    return {key.lower(): value or "" for key, value in attrs}
+
+
+def has_class(attrs: dict[str, str], class_name: str) -> bool:
+    return class_name in attrs.get("class", "").split()
+
+
+class BrowseHTMLParser(HTMLParser):
+    void_tags = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    field_classes = {
+        "px-browse-grid__name": "name",
+        "px-browse-grid__team": "team",
+        "px-browse-grid__rarity": "rarity",
+        "px-browse-grid__finish": "finish",
+        "px-browse-grid__price-tkn": "price_tokens_raw",
+        "px-browse-grid__price-usd": "price_usd_raw",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.cards: list[dict[str, Any]] = []
+        self.page_numbers: list[int] = []
+        self.text_parts: list[str] = []
+        self.in_card = False
+        self.card_depth = 0
+        self.current_card: dict[str, Any] = {}
+        self.active_fields: list[tuple[str, int]] = []
+
+    def handle_starttag(self, tag: str, attrs_raw: list[tuple[str, str | None]]) -> None:
+        attrs = attr_dict(attrs_raw)
+
+        href = attrs.get("href", "")
+        if tag == "a" and href:
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(href).query))
+            if query.get("page", "").isdigit():
+                self.page_numbers.append(int(query["page"]))
+
+        if tag == "li" and has_class(attrs, "px-browse-grid__card") and not self.in_card:
+            self.in_card = True
+            self.card_depth = 1
+            self.current_card = {
+                "href": "",
+                "aria_label": "",
+                "name": "",
+                "title": "",
+                "team": "",
+                "rarity": "",
+                "rarity_color": "",
+                "finish": "",
+                "price_tokens_raw": "",
+                "price_usd_raw": "",
+                "image_url": "",
+                "_text": {},
+            }
+            self.active_fields = []
+            return
+
+        if not self.in_card:
+            return
+
+        if tag not in self.void_tags:
+            self.card_depth += 1
+
+        if tag == "a" and has_class(attrs, "px-browse-grid__link"):
+            self.current_card["href"] = attrs.get("href", "")
+            self.current_card["aria_label"] = attrs.get("aria-label", "")
+
+        if tag == "img" and attrs.get("src") and not self.current_card.get("image_url"):
+            self.current_card["image_url"] = attrs.get("src", "")
+
+        for class_name, field in self.field_classes.items():
+            if has_class(attrs, class_name):
+                self.active_fields.append((field, self.card_depth))
+                if field == "name" and attrs.get("title"):
+                    self.current_card["title"] = attrs["title"]
+                if field == "rarity" and attrs.get("style"):
+                    match = re.search(r"--rarity-color\s*:\s*([^;]+)", attrs["style"])
+                    if match:
+                        self.current_card["rarity_color"] = match.group(1).strip()
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self.text_parts.append(data)
+        if not self.in_card or not data.strip():
+            return
+        text_store = self.current_card.setdefault("_text", {})
+        for field, _depth in self.active_fields:
+            text_store.setdefault(field, []).append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.in_card:
+            return
+
+        self.active_fields = [(field, depth) for field, depth in self.active_fields if depth != self.card_depth]
+
+        if self.card_depth == 1 and tag == "li":
+            text_store = self.current_card.pop("_text", {})
+            for field, parts in text_store.items():
+                if not self.current_card.get(field):
+                    self.current_card[field] = clean_text(" ".join(parts))
+            self.cards.append(dict(self.current_card))
+            self.current_card = {}
+            self.in_card = False
+            self.card_depth = 0
+            self.active_fields = []
+            return
+
+        self.card_depth = max(0, self.card_depth - 1)
+
+
+def parse_browse_html(html: str) -> tuple[list[dict[str, Any]], int]:
+    parser = BrowseHTMLParser()
+    parser.feed(html)
+    text = clean_text(" ".join(parser.text_parts))
+    total_items = total_items_from_text(text, parser.page_numbers, len(parser.cards))
+    return parser.cards, total_items
+
+
+def total_items_from_text(text: str, page_numbers: list[int], fallback: int) -> int:
     match = re.search(r"Loading more\s+[-—]\s+[\d,]+\s+of\s+([\d,]+)", text, flags=re.I)
     if match:
         return int(match.group(1).replace(",", ""))
     match = re.search(r"All\s+([\d,]+)\s+items\s+loaded", text, flags=re.I)
     if match:
         return int(match.group(1).replace(",", ""))
-    pages = []
-    for link in soup.select("nav[aria-label='Browse pagination'] a[href]"):
-        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(link["href"]).query))
-        if query.get("page", "").isdigit():
-            pages.append(int(query["page"]))
-    if pages:
-        return max(pages) * 60
+    if page_numbers:
+        return max(page_numbers) * 60
     return fallback
 
 
-def parse_card(card, timestamp: str, run_id: str, source_url: str) -> dict[str, Any] | None:
-    link = card.select_one("a.px-browse-grid__link[href]")
-    name_el = card.select_one(".px-browse-grid__name")
-    team_el = card.select_one(".px-browse-grid__team")
-    rarity_el = card.select_one(".px-browse-grid__rarity")
-    finish_el = card.select_one(".px-browse-grid__finish")
-    price_tkn_el = card.select_one(".px-browse-grid__price-tkn")
-    price_usd_el = card.select_one(".px-browse-grid__price-usd")
-    img_el = card.select_one(".px-browse-grid__art img")
-
-    name = clean_text(name_el.get("title") if name_el else "") or clean_text(name_el.get_text(" ", strip=True) if name_el else "")
+def parse_card(card: dict[str, Any], timestamp: str, run_id: str, source_url: str) -> dict[str, Any] | None:
+    name = clean_text(card.get("title")) or clean_text(card.get("name"))
     if not name:
         return None
 
-    finish = normalize_variant(finish_el.get_text(" ", strip=True) if finish_el else "") or infer_variant_from_name(name)
-    href = absolute_url(link["href"]) if link else ""
-    team = clean_text(team_el.get_text(" ", strip=True) if team_el else "")
-    price_tokens = parse_tokens(price_tkn_el.get_text(" ", strip=True) if price_tkn_el else "")
-    usd_price = parse_usd(price_usd_el.get_text(" ", strip=True) if price_usd_el else "")
-    image_url = absolute_url(img_el.get("src", "")) if img_el else ""
+    finish = normalize_variant(card.get("finish")) or infer_variant_from_name(name)
+    href = absolute_url(clean_text(card.get("href")))
+    team = clean_text(card.get("team"))
+    price_tokens = parse_tokens(card.get("price_tokens_raw"))
+    usd_price = parse_usd(card.get("price_usd_raw"))
+    image_url = absolute_url(clean_text(card.get("image_url")))
 
     if price_tokens is None:
         return None
@@ -228,8 +335,8 @@ def parse_card(card, timestamp: str, run_id: str, source_url: str) -> dict[str, 
         "category": infer_category(name, team),
         "variant": finish,
         "team": team,
-        "rarity": clean_text(rarity_el.get_text(" ", strip=True) if rarity_el else ""),
-        "rarity_color": "",
+        "rarity": clean_text(card.get("rarity")),
+        "rarity_color": clean_text(card.get("rarity_color")),
         "price_tokens": price_tokens,
         "usd_price": usd_price,
         "image_url": image_url,
@@ -245,9 +352,7 @@ def collect_browse_rows(args, timestamp: str, run_id: str) -> list[dict[str, Any
     first_url = page_url(args.url, 1)
     print(f"Collecting browse page 1: {first_url}")
     first_html = fetch_html(first_url)
-    first_soup = BeautifulSoup(first_html, "html.parser")
-    first_cards = first_soup.select("li.px-browse-grid__card")
-    total_items = total_items_from_soup(first_soup, len(first_cards))
+    first_cards, total_items = parse_browse_html(first_html)
     page_count = max(1, math.ceil(total_items / max(1, len(first_cards) or 60)))
     if args.max_pages > 0:
         page_count = min(page_count, args.max_pages)
@@ -255,15 +360,15 @@ def collect_browse_rows(args, timestamp: str, run_id: str) -> list[dict[str, Any
     for page in range(1, page_count + 1):
         url = first_url if page == 1 else page_url(args.url, page)
         if page == 1:
-            soup = first_soup
+            cards = first_cards
         else:
             print(f"Collecting browse page {page}/{page_count}: {url}")
-            soup = BeautifulSoup(fetch_html(url), "html.parser")
+            cards, _total_items = parse_browse_html(fetch_html(url))
             if args.page_delay > 0:
                 time.sleep(args.page_delay)
 
         parsed = 0
-        for card in soup.select("li.px-browse-grid__card"):
+        for card in cards:
             row = parse_card(card, timestamp, run_id, url)
             if not row:
                 continue
@@ -385,6 +490,17 @@ def enrich_rows_with_metadata(rows: list[dict[str, Any]], workers: int) -> list[
         for future in as_completed(futures):
             url = futures[future]
             metadata_by_url[url] = future.result()
+
+    failed_urls = [
+        url for url, metadata in metadata_by_url.items()
+        if metadata.get("metadata_status") == "fetch_failed"
+    ]
+    if failed_urls:
+        print(f"Retrying failed metadata sequentially: {len(failed_urls)} items")
+        for index, url in enumerate(failed_urls, start=1):
+            time.sleep(1.0)
+            print(f"  retry metadata {index}/{len(failed_urls)}")
+            metadata_by_url[url] = fetch_item_metadata(url)
 
     for row in rows:
         metadata = metadata_by_url.get(row.get("item_url"), {})

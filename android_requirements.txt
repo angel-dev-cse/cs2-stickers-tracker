@@ -3,8 +3,5 @@
 # Install numpy/pandas from Termux packages when possible:
 #   pkg install python-numpy python-pandas
 #
-# BeautifulSoup should also come from Termux:
-#   pkg install python-bs4
-#
 # Keep this file empty on purpose. Termux blocks global pip installs because
 # they can break its package-managed Python.

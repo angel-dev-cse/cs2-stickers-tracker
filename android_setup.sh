@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 pkg update -y
-pkg install -y python git ca-certificates openssl python-bs4
+pkg install -y python git ca-certificates openssl
 
 if ! python - <<'PY' >/dev/null 2>&1
 import numpy
