@@ -669,6 +669,7 @@ let sortKey = 'priority_rank';
 let sortDir = 1;
 let filtered = [];
 let viewMode = 'list';
+let modalHistoryOpen = false;
 const recordById = new Map(records.map(r => [String(r.sticker_id), r]));
 
 const $ = (id) => document.getElementById(id);
@@ -1130,6 +1131,7 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     color:var(--text);
     text-align:left;
     cursor:pointer;
+    font:inherit;
     overflow:hidden;
     box-shadow:0 12px 28px rgba(0,0,0,.20);
     transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
@@ -1289,17 +1291,52 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     background:#34d399;
     box-shadow:0 0 0 4px rgba(52,211,153,.12);
   }
-  .grid-view[data-density="dense"] .grid-card { min-height:218px; padding:8px; }
-  .grid-view[data-density="dense"] .grid-name { font-size:12px; }
+  .grid-view[data-density="dense"] {
+    gap:8px;
+    padding:10px;
+  }
+  .grid-view[data-density="dense"] .grid-card { min-height:190px; gap:6px; padding:7px; border-radius:7px; }
+  .grid-view[data-density="dense"] .grid-rank,
+  .grid-view[data-density="dense"] .grid-tier {
+    top:6px;
+    min-height:20px;
+    padding:2px 5px;
+    font-size:10px;
+  }
+  .grid-view[data-density="dense"] .grid-rank { left:6px; }
+  .grid-view[data-density="dense"] .grid-tier { right:6px; }
+  .grid-view[data-density="dense"] .grid-image { padding:12px 3px 2px; }
+  .grid-view[data-density="dense"] .grid-name { font-size:11px; }
   .grid-view[data-density="dense"] .grid-meta,
   .grid-view[data-density="dense"] .grid-kpi small { display:none; }
   .grid-view[data-density="dense"] .grid-kpis { grid-template-columns:1fr 1fr; }
   .grid-view[data-density="dense"] .grid-kpi:last-child { display:none; }
-  .grid-view[data-density="ultra"] .grid-card { min-height:174px; gap:5px; padding:7px; }
-  .grid-view[data-density="ultra"] .grid-title { display:none; }
+  .grid-view[data-density="dense"] .grid-verdict-pill { padding:4px 5px; font-size:8.5px; }
+  .grid-view[data-density="dense"] .grid-price { font-size:12px; }
+  .grid-view[data-density="dense"] .grid-kpi { padding:3px 4px; }
+  .grid-view[data-density="dense"] .grid-kpi b { font-size:10px; gap:3px; }
+  .grid-view[data-density="dense"] .signal-dot { width:6px; height:6px; }
+  .grid-view[data-density="ultra"] {
+    gap:6px;
+    padding:8px;
+  }
+  .grid-view[data-density="ultra"] .grid-card { min-height:142px; gap:4px; padding:6px; border-radius:6px; }
+  .grid-view[data-density="ultra"] .grid-rank,
+  .grid-view[data-density="ultra"] .grid-tier {
+    top:5px;
+    min-height:18px;
+    padding:2px 5px;
+    font-size:9px;
+  }
+  .grid-view[data-density="ultra"] .grid-rank { left:5px; }
+  .grid-view[data-density="ultra"] .grid-tier { right:5px; }
+  .grid-view[data-density="ultra"] .grid-image { padding:11px 2px 1px; }
+  .grid-view[data-density="ultra"] .grid-name { font-size:9.5px; line-height:1.1; }
+  .grid-view[data-density="ultra"] .grid-meta { display:none; }
   .grid-view[data-density="ultra"] .grid-kpis { display:none; }
   .grid-view[data-density="ultra"] .grid-verdict { display:block; }
-  .grid-view[data-density="ultra"] .grid-verdict-pill { display:block; margin-bottom:5px; }
+  .grid-view[data-density="ultra"] .grid-verdict-pill { display:block; margin-bottom:4px; padding:3px 4px; font-size:7.5px; }
+  .grid-view[data-density="ultra"] .grid-price { font-size:10.5px; }
   .grid-empty { grid-column:1 / -1; padding:38px; text-align:center; color:var(--muted); }
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
   col.rank-col { width:64px; }
@@ -1534,21 +1571,30 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     box-shadow:0 24px 70px rgba(0,0,0,.52);
   }
   .modal-close {
-    position:sticky;
-    top:10px;
-    float:right;
-    z-index:3;
-    width:34px;
-    height:34px;
-    min-height:34px;
-    margin:10px 10px 0 0;
-    padding:0;
+    position:fixed;
+    top:calc(env(safe-area-inset-top, 0px) + 12px);
+    right:calc(env(safe-area-inset-right, 0px) + 12px);
+    z-index:2003;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:7px;
+    min-width:88px;
+    height:42px;
+    min-height:42px;
+    margin:0;
+    padding:0 13px;
+    border:1px solid rgba(169,180,196,.30);
     border-radius:999px;
-    background:#101a29;
+    background:rgba(16,26,41,.96);
     color:#edf4ff;
+    box-shadow:0 14px 34px rgba(0,0,0,.45);
     font-size:18px;
+    font-weight:950;
     line-height:1;
+    backdrop-filter:blur(10px);
   }
+  .modal-close::before { content:"Close"; font-size:12px; line-height:1; }
   .modal-content { padding:18px; }
   .modal-grid { display:grid; grid-template-columns:minmax(270px,.9fr) minmax(0,1.1fr); gap:18px; clear:both; }
   .modal-visual {
@@ -1727,6 +1773,13 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     .note-block { gap:8px; font-size:12px; }
     .modal { padding:8px; }
     .modal-dialog { width:calc(100vw - 16px); max-height:calc(100vh - 16px); border-radius:9px; }
+    .modal-close {
+      top:calc(env(safe-area-inset-top, 0px) + 10px);
+      right:calc(env(safe-area-inset-right, 0px) + 10px);
+      min-width:92px;
+      height:42px;
+      font-size:18px;
+    }
     .modal-content { padding:12px; }
     .modal-grid { grid-template-columns:1fr; gap:12px; }
     .modal-title { font-size:20px; }
@@ -1849,6 +1902,7 @@ let sortKey = 'priority_rank';
 let sortDir = 1;
 let filtered = [];
 let viewMode = 'list';
+let modalHistoryOpen = false;
 const recordById = new Map(records.map(r => [String(r.sticker_id), r]));
 
 const $ = (id) => document.getElementById(id);
@@ -2584,16 +2638,24 @@ function openStickerModal(id) {
   content.innerHTML = stickerDetailsHtml(r);
   modal.hidden = false;
   document.body.style.overflow = 'hidden';
+  if (!modalHistoryOpen && window.history && window.history.pushState) {
+    window.history.pushState({stickerModal:true}, '', window.location.href);
+    modalHistoryOpen = true;
+  }
   $('modalClose')?.focus({preventScroll:true});
 }
 
-function closeStickerModal() {
+function closeStickerModal(fromPop=false) {
   const modal = $('detailModal');
   if (!modal || modal.hidden) return;
   modal.hidden = true;
   document.body.style.overflow = '';
   const content = $('modalContent');
   if (content) content.innerHTML = '';
+  if (modalHistoryOpen) {
+    modalHistoryOpen = false;
+    if (!fromPop && window.history) window.history.back();
+  }
 }
 
 function setupDetailModal() {
@@ -2608,6 +2670,9 @@ function setupDetailModal() {
   document.querySelector('[data-close-modal]')?.addEventListener('click', closeStickerModal);
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeStickerModal();
+  });
+  window.addEventListener('popstate', () => {
+    closeStickerModal(true);
   });
 }
 
