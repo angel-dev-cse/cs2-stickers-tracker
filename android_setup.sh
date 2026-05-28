@@ -6,14 +6,28 @@ cd "$(dirname "$0")"
 pkg update -y
 pkg install -y python git ca-certificates openssl
 
-if ! pkg install -y python-numpy python-pandas; then
-  echo "Termux pandas/numpy packages were unavailable. Falling back to pip; this can be slow."
-  python -m pip install --upgrade pip wheel setuptools
-  python -m pip install --prefer-binary numpy pandas
+if ! python - <<'PY' >/dev/null 2>&1
+import numpy
+import pandas
+PY
+then
+  pkg install -y python-numpy
+  if ! pkg install -y python-pandas; then
+    echo "python-pandas was not found in the default Termux repo. Trying TUR..."
+    pkg install -y tur-repo || true
+    pkg update -y
+    pkg install -y python-pandas
+  fi
 fi
 
+python - <<'PY'
+import numpy
+import pandas
+print("numpy/pandas OK")
+PY
+
 python -m pip install --upgrade pip
-python -m pip install -r android_requirements.txt
+python -m pip install --only-binary=:all: -r android_requirements.txt
 
 mkdir -p data/snapshots data/history analyze visualized
 
