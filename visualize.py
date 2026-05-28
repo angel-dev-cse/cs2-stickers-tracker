@@ -668,6 +668,8 @@ const verdictColors = __VERDICT_COLORS__;
 let sortKey = 'priority_rank';
 let sortDir = 1;
 let filtered = [];
+let viewMode = 'list';
+const recordById = new Map(records.map(r => [String(r.sticker_id), r]));
 
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d=0) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : '—';
@@ -1009,6 +1011,71 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   }
   .panel-title { font-size:16px; font-weight:850; }
   .hint { color:var(--muted); font-size:12px; line-height:1.45; }
+  .panel-tools { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:flex-end; gap:9px; min-width:340px; }
+  .view-toggle {
+    display:inline-flex;
+    gap:3px;
+    padding:3px;
+    border:1px solid var(--line);
+    border-radius:8px;
+    background:#0b111b;
+  }
+  .view-btn {
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    min-height:30px;
+    padding:5px 9px;
+    border:0;
+    border-radius:6px;
+    background:transparent;
+    color:var(--muted);
+    font-size:12px;
+    font-weight:900;
+  }
+  .view-btn.active { background:#1b2b43; color:#edf4ff; box-shadow:inset 0 0 0 1px rgba(91,140,255,.30); }
+  .view-icon { width:14px; height:14px; position:relative; display:inline-block; opacity:.95; }
+  .view-icon.list-icon::before,
+  .view-icon.list-icon::after {
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    height:2px;
+    border-radius:999px;
+    background:currentColor;
+    box-shadow:0 5px 0 currentColor, 0 10px 0 currentColor;
+  }
+  .view-icon.list-icon::before { top:1px; }
+  .view-icon.grid-icon {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:3px;
+  }
+  .view-icon.grid-icon::before {
+    content:"";
+    grid-column:1 / -1;
+    width:100%;
+    height:100%;
+    border-radius:3px;
+    background:currentColor;
+    box-shadow:0 0 0 999px currentColor;
+    clip-path:polygon(0 0, 42% 0, 42% 42%, 0 42%, 0 58%, 42% 58%, 42% 100%, 0 100%, 58% 0, 100% 0, 100% 42%, 58% 42%, 58% 58%, 100% 58%, 100% 100%, 58% 100%, 58% 0);
+  }
+  .grid-controls {
+    display:none;
+    align-items:center;
+    gap:7px;
+    padding:3px;
+    border:1px solid var(--line);
+    border-radius:8px;
+    background:#0b111b;
+  }
+  .grid-controls.active { display:flex; }
+  .grid-controls label { color:var(--muted); font-size:11px; font-weight:850; padding-left:6px; }
+  .grid-controls select,
+  .grid-controls input { width:auto; min-width:86px; min-height:30px; padding:5px 7px; font-size:12px; }
+  .grid-controls input { width:78px; }
   .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   .chart-body { padding:14px; }
   .chart-frame {
@@ -1038,7 +1105,202 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .legend-dot { width:9px; height:9px; display:inline-block; border-radius:99px; margin-right:5px; vertical-align:-1px; }
   .chart-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:0 14px 12px; }
   .inline-select { width:auto; min-width:96px; }
+  .table-wrap[hidden], .grid-view[hidden] { display:none !important; }
   .table-wrap { max-height:82vh; overflow:auto; }
+  .grid-view {
+    --grid-cols:5;
+    display:grid;
+    grid-template-columns:repeat(var(--grid-cols), minmax(0, 1fr));
+    gap:12px;
+    padding:14px;
+  }
+  .grid-card {
+    position:relative;
+    display:grid;
+    grid-template-rows:auto minmax(0,1fr) auto;
+    gap:8px;
+    min-width:0;
+    min-height:262px;
+    padding:10px;
+    border:1px solid rgba(169,180,196,.16);
+    border-radius:8px;
+    background:
+      radial-gradient(circle at 50% 32%, rgba(91,140,255,.13), transparent 46%),
+      linear-gradient(180deg, rgba(19,29,44,.96), rgba(11,17,27,.98));
+    color:var(--text);
+    text-align:left;
+    cursor:pointer;
+    overflow:hidden;
+    box-shadow:0 12px 28px rgba(0,0,0,.20);
+    transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+  }
+  .grid-card:hover,
+  .grid-card:focus-visible {
+    transform:translateY(-2px);
+    border-color:rgba(91,140,255,.42);
+    box-shadow:0 16px 34px rgba(0,0,0,.28), inset 0 0 0 1px rgba(91,140,255,.12);
+    outline:none;
+  }
+  .grid-card.release-low-card { border-color:rgba(52,211,153,.34); }
+  .grid-rank {
+    position:absolute;
+    top:9px;
+    left:9px;
+    z-index:2;
+    display:inline-flex;
+    align-items:center;
+    min-height:24px;
+    padding:3px 7px;
+    border-radius:999px;
+    background:rgba(8,13,20,.76);
+    border:1px solid rgba(169,180,196,.20);
+    color:#fff;
+    font-size:12px;
+    font-weight:950;
+    backdrop-filter:blur(8px);
+  }
+  .grid-tier {
+    position:absolute;
+    top:9px;
+    right:9px;
+    z-index:2;
+    display:inline-flex;
+    align-items:center;
+    min-height:24px;
+    padding:3px 7px;
+    border-radius:999px;
+    background:#dce8ff;
+    color:#0b1220;
+    font-size:11px;
+    font-weight:950;
+  }
+  .grid-image {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    aspect-ratio:1;
+    min-height:0;
+    padding:18px 6px 6px;
+  }
+  .grid-image img {
+    width:100%;
+    height:100%;
+    object-fit:contain;
+    filter:drop-shadow(0 12px 16px rgba(0,0,0,.32));
+    transition:transform .16s ease;
+  }
+  .grid-card:hover .grid-image img { transform:scale(1.035); }
+  .grid-title { min-width:0; }
+  .grid-name {
+    display:block;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:#fff;
+    font-size:13px;
+    font-weight:950;
+    line-height:1.2;
+  }
+  .grid-meta {
+    display:flex;
+    align-items:center;
+    gap:6px;
+    min-width:0;
+    margin-top:5px;
+    color:var(--muted);
+    font-size:11px;
+    line-height:1.2;
+  }
+  .grid-variant { flex:0 0 auto; padding:2px 5px; border:1px solid var(--line); border-radius:999px; color:#d8e1ee; }
+  .grid-team { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .grid-bottom { display:grid; gap:8px; }
+  .grid-verdict {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:7px;
+    min-width:0;
+  }
+  .grid-verdict-pill {
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    padding:5px 7px;
+    border-radius:999px;
+    color:#07101b;
+    font-size:10px;
+    font-weight:950;
+    line-height:1.05;
+    text-transform:uppercase;
+  }
+  .grid-price { color:#fff; font-size:14px; font-weight:950; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .grid-kpis { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:5px; }
+  .grid-kpi {
+    min-width:0;
+    padding:5px 5px;
+    border:1px solid rgba(169,180,196,.13);
+    border-radius:6px;
+    background:rgba(8,13,20,.42);
+  }
+  .grid-kpi small {
+    display:block;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--muted);
+    font-size:9px;
+    font-weight:850;
+    line-height:1.1;
+    text-transform:uppercase;
+  }
+  .grid-kpi b {
+    display:flex;
+    align-items:center;
+    gap:4px;
+    min-width:0;
+    margin-top:3px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:#edf4ff;
+    font-size:11px;
+    font-weight:950;
+    font-variant-numeric:tabular-nums;
+  }
+  .signal-dot {
+    flex:0 0 auto;
+    width:7px;
+    height:7px;
+    border-radius:999px;
+    background:#94a3b8;
+    box-shadow:0 0 0 0 rgba(148,163,184,.0);
+  }
+  .signal-dot.up, .signal-dot.low { background:#34d399; }
+  .signal-dot.down { background:#fb7185; }
+  .signal-dot.watch { background:#f6c945; }
+  .grid-low-ribbon {
+    position:absolute;
+    left:9px;
+    bottom:9px;
+    width:9px;
+    height:9px;
+    border-radius:999px;
+    background:#34d399;
+    box-shadow:0 0 0 4px rgba(52,211,153,.12);
+  }
+  .grid-view[data-density="dense"] .grid-card { min-height:218px; padding:8px; }
+  .grid-view[data-density="dense"] .grid-name { font-size:12px; }
+  .grid-view[data-density="dense"] .grid-meta,
+  .grid-view[data-density="dense"] .grid-kpi small { display:none; }
+  .grid-view[data-density="dense"] .grid-kpis { grid-template-columns:1fr 1fr; }
+  .grid-view[data-density="dense"] .grid-kpi:last-child { display:none; }
+  .grid-view[data-density="ultra"] .grid-card { min-height:174px; gap:5px; padding:7px; }
+  .grid-view[data-density="ultra"] .grid-title { display:none; }
+  .grid-view[data-density="ultra"] .grid-kpis { display:none; }
+  .grid-view[data-density="ultra"] .grid-verdict { display:block; }
+  .grid-view[data-density="ultra"] .grid-verdict-pill { display:block; margin-bottom:5px; }
+  .grid-empty { grid-column:1 / -1; padding:38px; text-align:center; color:var(--muted); }
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
   col.rank-col { width:64px; }
   col.sticker-col { width:28%; }
@@ -1234,12 +1496,89 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     from { opacity:.82; transform:translateY(2px); }
     to { opacity:1; transform:translateY(0); }
   }
+  @keyframes signalPulse {
+    0% { box-shadow:0 0 0 0 rgba(52,211,153,.32); }
+    70% { box-shadow:0 0 0 7px rgba(52,211,153,0); }
+    100% { box-shadow:0 0 0 0 rgba(52,211,153,0); }
+  }
   @media (prefers-reduced-motion:no-preference) {
     tbody tr { animation:rowIn .14s ease-out both; }
+    .signal-dot.up, .signal-dot.low { animation:signalPulse 1.8s ease-out infinite; }
   }
   .note-block { display:grid; gap:9px; line-height:1.45; font-size:13px; color:#d8e1ee; }
   .note-block label { display:block; color:var(--muted); font-size:11px; margin-bottom:2px; }
   .note-action { color:#f7df9d; }
+  .modal[hidden] { display:none !important; }
+  .modal {
+    position:fixed;
+    inset:0;
+    z-index:2000;
+    display:grid;
+    place-items:center;
+    padding:18px;
+  }
+  .modal-backdrop {
+    position:absolute;
+    inset:0;
+    background:rgba(3,7,12,.72);
+    backdrop-filter:blur(10px);
+  }
+  .modal-dialog {
+    position:relative;
+    width:min(1080px, calc(100vw - 28px));
+    max-height:calc(100vh - 28px);
+    overflow:auto;
+    border:1px solid rgba(169,180,196,.22);
+    border-radius:10px;
+    background:#0d1420;
+    box-shadow:0 24px 70px rgba(0,0,0,.52);
+  }
+  .modal-close {
+    position:sticky;
+    top:10px;
+    float:right;
+    z-index:3;
+    width:34px;
+    height:34px;
+    min-height:34px;
+    margin:10px 10px 0 0;
+    padding:0;
+    border-radius:999px;
+    background:#101a29;
+    color:#edf4ff;
+    font-size:18px;
+    line-height:1;
+  }
+  .modal-content { padding:18px; }
+  .modal-grid { display:grid; grid-template-columns:minmax(270px,.9fr) minmax(0,1.1fr); gap:18px; clear:both; }
+  .modal-visual {
+    position:relative;
+    display:grid;
+    gap:12px;
+    align-content:start;
+    padding:14px;
+    border:1px solid rgba(169,180,196,.14);
+    border-radius:9px;
+    background:radial-gradient(circle at 50% 38%, rgba(91,140,255,.16), transparent 48%), #0a1019;
+  }
+  .modal-visual img { width:100%; max-height:430px; object-fit:contain; filter:drop-shadow(0 18px 22px rgba(0,0,0,.38)); }
+  .modal-rank { position:absolute; top:12px; left:12px; padding:5px 9px; border-radius:999px; background:rgba(8,13,20,.76); border:1px solid rgba(169,180,196,.22); font-weight:950; }
+  .modal-main { min-width:0; }
+  .modal-title-row { display:flex; flex-wrap:wrap; align-items:center; gap:9px; margin-bottom:7px; }
+  .modal-title { margin:0; color:#fff; font-size:26px; line-height:1.12; letter-spacing:0; }
+  .modal-meta { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .modal-price { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; margin:0 0 12px; }
+  .modal-price b { color:#fff; font-size:32px; line-height:1; font-weight:950; font-variant-numeric:tabular-nums; }
+  .modal-price span { color:var(--muted); font-weight:850; }
+  .modal-sections { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .modal-section {
+    padding:12px;
+    border:1px solid rgba(169,180,196,.13);
+    border-radius:8px;
+    background:rgba(8,13,20,.42);
+  }
+  .modal-section h3 { margin:0 0 9px; font-size:12px; color:#cfdae8; text-transform:uppercase; letter-spacing:.04em; }
+  .modal-note { margin-top:12px; }
   .empty { padding:38px; text-align:center; color:var(--muted); }
   .footer-note { padding:12px 16px; border-top:1px solid var(--line-soft); color:var(--muted); font-size:12px; line-height:1.45; }
   code { color:#d8e1ee; background:#0b111b; border:1px solid var(--line); padding:1px 5px; border-radius:4px; }
@@ -1303,7 +1642,26 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     .panel-head { display:block; padding:11px 12px; }
     .panel-title { font-size:15px; }
     .hint { font-size:11px; }
+    .panel-tools { justify-content:flex-start; min-width:0; margin-top:10px; }
+    .view-toggle, .grid-controls { width:100%; }
+    .view-btn { flex:1; justify-content:center; }
+    .grid-controls { flex-wrap:wrap; }
+    .grid-controls select { flex:1; min-width:112px; }
+    .grid-controls input { flex:1; min-width:96px; }
     .table-wrap { max-height:none; overflow:visible; }
+    .grid-view { gap:8px; padding:10px; }
+    .grid-card { min-height:232px; padding:8px; }
+    .grid-image { padding-top:16px; }
+    .grid-name { font-size:12px; }
+    .grid-kpis { grid-template-columns:1fr 1fr; }
+    .grid-kpi:last-child { display:none; }
+    .grid-view[data-density="dense"] .grid-card,
+    .grid-view[data-density="ultra"] .grid-card { min-height:150px; }
+    .grid-view[data-density="dense"] .grid-verdict,
+    .grid-view[data-density="ultra"] .grid-verdict { display:block; }
+    .grid-view[data-density="dense"] .grid-verdict-pill,
+    .grid-view[data-density="ultra"] .grid-verdict-pill { display:block; margin-bottom:5px; }
+    .grid-view[data-density="ultra"] .grid-price { font-size:12px; }
     table { display:block; width:100%; min-width:0; table-layout:auto; }
     colgroup, thead { display:none; }
     tbody { display:grid; gap:10px; }
@@ -1367,6 +1725,13 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     .spark { height:80px; }
     .spark-tip { max-width:230px; font-size:11px; }
     .note-block { gap:8px; font-size:12px; }
+    .modal { padding:8px; }
+    .modal-dialog { width:calc(100vw - 16px); max-height:calc(100vh - 16px); border-radius:9px; }
+    .modal-content { padding:12px; }
+    .modal-grid { grid-template-columns:1fr; gap:12px; }
+    .modal-title { font-size:20px; }
+    .modal-price b { font-size:28px; }
+    .modal-sections { grid-template-columns:1fr; gap:9px; }
     .footer-note { padding:11px 12px; font-size:11px; }
   }
 </style>
@@ -1415,7 +1780,24 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     <section class="panel">
       <div class="panel-head">
         <div><div class="panel-title">Priority Table</div><div class="hint">Click headers to sort. Hover over trend points to inspect token price, USD value, popularity and timestamp.</div></div>
-        <div class="hint" id="sortHint">Sorted by priority rank</div>
+        <div class="panel-tools">
+          <div class="view-toggle" role="group" aria-label="View mode">
+            <button class="view-btn active" id="listViewBtn" type="button" aria-pressed="true"><span class="view-icon list-icon"></span>List</button>
+            <button class="view-btn" id="gridViewBtn" type="button" aria-pressed="false"><span class="view-icon grid-icon"></span>Grid</button>
+          </div>
+          <div class="grid-controls" id="gridControls" aria-label="Grid density">
+            <label for="gridCols">Columns</label>
+            <select id="gridCols">
+              <option value="auto" selected>Auto fit</option>
+              <option value="5">5 per row</option>
+              <option value="10">10 per row</option>
+              <option value="15">15 per row</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input id="gridCustomCols" type="number" min="1" max="24" step="1" placeholder="Custom" hidden />
+          </div>
+          <div class="hint" id="sortHint">Sorted by priority rank</div>
+        </div>
       </div>
       <div class="table-wrap">
         <table id="table">
@@ -1442,10 +1824,18 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
           <tbody id="tbody"></tbody>
         </table>
       </div>
+      <div id="gridView" class="grid-view" aria-label="Sticker grid" hidden></div>
       <div class="footer-note"><span id="renderHint">Rows are capped for smooth scrolling; all records remain searchable and sortable.</span> Generated files are written under <code>visualized/</code>.</div>
     </section>
   </main>
   <div id="sparkTip" class="spark-tip" role="tooltip"></div>
+  <div id="detailModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <button class="modal-close" id="modalClose" type="button" aria-label="Close details">&times;</button>
+      <div class="modal-content" id="modalContent"></div>
+    </div>
+  </div>
 </div>
 
 <script id="records-json" type="application/json">__DATA_JSON__</script>
@@ -1458,6 +1848,8 @@ const verdictOrder = __VERDICT_ORDER__;
 let sortKey = 'priority_rank';
 let sortDir = 1;
 let filtered = [];
+let viewMode = 'list';
+const recordById = new Map(records.map(r => [String(r.sticker_id), r]));
 
 const $ = (id) => document.getElementById(id);
 const hasNum = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
@@ -1722,6 +2114,122 @@ function rowHtml(r) {
   </tr>`;
 }
 
+function signalFor(value, low=false) {
+  if (low) return 'low';
+  const n = num(value);
+  if (n === null) return 'watch';
+  if (n > 0.5) return 'up';
+  if (n < -0.5) return 'down';
+  return 'watch';
+}
+
+function gridCardHtml(r) {
+  const vcolor = colorForVerdict(r.verdict);
+  const expectedClass = pctClass(r.expected_return_pct);
+  const demandClass = pctClass(r.demand_momentum_score);
+  const changeValue = hasNum(r.snapshot_price_change_pct) ? r.snapshot_price_change_pct : r.recent_return_pct;
+  const changeClass = pctClass(changeValue);
+  const atReleaseLow = isReleaseLow(r);
+  const typeLabel = r.display_type || r.category || '-';
+  const image = r.image_url || '';
+  const id = String(r.sticker_id || r.sticker || r.priority_rank);
+  return `<button class="grid-card ${atReleaseLow ? 'release-low-card' : ''}" type="button" data-id="${esc(id)}" aria-label="Open details for ${esc(r.sticker)}">
+    <span class="grid-rank">#${esc(r.priority_rank)}</span>
+    <span class="grid-tier">${esc(r.priority_tier || '')}</span>
+    ${atReleaseLow ? '<span class="grid-low-ribbon" title="Current low"></span>' : ''}
+    <span class="grid-image"><img src="${esc(image)}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" alt="${esc(r.sticker)}" /></span>
+    <span class="grid-title">
+      <span class="grid-name">${esc(r.sticker)}</span>
+      <span class="grid-meta"><span class="grid-variant">${esc(r.variant || '-')}</span><span class="grid-team">${esc(r.player_name || r.team_name || r.team || typeLabel)}</span></span>
+    </span>
+    <span class="grid-bottom">
+      <span class="grid-verdict">
+        <span class="grid-verdict-pill" style="background:${vcolor}">${esc(r.verdict || '-')}</span>
+        <span class="grid-price">${money(r.usd_price)}</span>
+      </span>
+      <span class="grid-kpis">
+        <span class="grid-kpi"><small>Expected</small><b class="${expectedClass}"><span class="signal-dot ${signalFor(r.expected_return_pct, atReleaseLow)}"></span>${pct(r.expected_return_pct,0)}</b></span>
+        <span class="grid-kpi"><small>Demand</small><b class="${demandClass}"><span class="signal-dot ${signalFor(r.demand_momentum_score)}"></span>${fmt(r.demand_momentum_score,2)}</b></span>
+        <span class="grid-kpi"><small>Change</small><b class="${changeClass}"><span class="signal-dot ${signalFor(changeValue)}"></span>${pct(changeValue,1)}</b></span>
+      </span>
+    </span>
+  </button>`;
+}
+
+function modalMetric(label, value, cls='') {
+  return `<div class="metric-row"><span>${esc(label)}</span><b class="${cls}">${value}</b></div>`;
+}
+
+function stickerDetailsHtml(r) {
+  const points = historySeries[r.sticker_id] || [];
+  const vcolor = colorForVerdict(r.verdict);
+  const expectedClass = pctClass(r.expected_return_pct);
+  const demandClass = pctClass(r.demand_momentum_score);
+  const changeValue = hasNum(r.snapshot_price_change_pct) ? r.snapshot_price_change_pct : r.recent_return_pct;
+  const changeClass = pctClass(changeValue);
+  const typeLabel = r.display_type || r.category || '-';
+  const link = r.item_url || '#';
+  const image = r.image_url || '';
+  return `<div class="modal-grid">
+    <div class="modal-visual">
+      <span class="modal-rank">#${esc(r.priority_rank)} ${esc(r.priority_tier || '')}</span>
+      <img src="${esc(image)}" alt="${esc(r.sticker)}" />
+      <div class="actions"><a class="action primary" href="${esc(link)}" target="_blank" rel="noopener">Open CS2Tokens</a></div>
+    </div>
+    <div class="modal-main">
+      <div class="modal-title-row">
+        <h2 class="modal-title" id="detailTitle">${esc(r.sticker)}</h2>
+        <span class="verdict" style="background:${vcolor}">${esc(r.verdict || '-')}</span>
+      </div>
+      <div class="modal-meta">${esc(r.player_name || r.team_name || r.team || 'No team')} | ${esc(typeLabel)} | ${esc(r.variant || '-')}</div>
+      <div class="modal-price"><b>${money(r.usd_price)}</b><span>${tokens(r.price_tokens)} tokens</span></div>
+      ${lowGapHtml(r)}
+      ${priceRangeHtml(r, points)}
+      <div class="modal-sections">
+        <div class="modal-section">
+          <h3>Decision</h3>
+          <div class="metric-list" style="margin-top:0">
+            ${modalMetric('Priority', fmt(r.priority_score,1))}
+            ${modalMetric('Size', esc(r.suggested_size || '-'))}
+            ${modalMetric('Confidence', fmt(r.prediction_confidence,2))}
+            ${modalMetric('Entry', esc(r.entry_tier || '-'))}
+          </div>
+        </div>
+        <div class="modal-section">
+          <h3>Edge</h3>
+          <div class="metric-list" style="margin-top:0">
+            ${modalMetric('Expected', pct(r.expected_return_pct,0), expectedClass)}
+            ${modalMetric('Value Edge', fmt(r.value_edge_score,2))}
+            ${modalMetric('Quality', fmt(r.quality_score,2))}
+            ${modalMetric('Manual Score', fmt(r.manual_score_count,0))}
+          </div>
+        </div>
+        <div class="modal-section">
+          <h3>Market</h3>
+          <div class="metric-list" style="margin-top:0">
+            ${modalMetric('Flood', `${esc(r.flood_risk || '-')} (${fmt(r.flood_risk_score,2)})`)}
+            ${modalMetric('Discount', pct(r.discount_from_high_pct,0))}
+            ${modalMetric('Demand', fmt(r.demand_momentum_score,2), demandClass)}
+            ${modalMetric('Change', pct(changeValue,1), changeClass)}
+          </div>
+        </div>
+        <div class="modal-section">
+          <h3>Trend</h3>
+          ${sparkline(points, r, 420, 118)}
+        </div>
+      </div>
+      <div class="modal-section modal-note">
+        <h3>Notes</h3>
+        <div class="note-block">
+          <div><label>Reason</label><div>${esc(r.quick_reason || '-')}</div></div>
+          <div><label>Risk</label><div>${esc(r.risk_note || '-')}</div></div>
+          <div><label>Action</label><div class="note-action">${esc(r.action_note || '-')}</div></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function applyFilters() {
   const q = $('search').value.trim().toLowerCase();
   const verdict = $('verdictFilter').value;
@@ -1766,7 +2274,7 @@ function applyFilters() {
   });
   applySortPreset(sortPreset);
   sortRows();
-  renderTable();
+  renderResults();
   renderCharts();
 }
 
@@ -1812,9 +2320,57 @@ function displayedRows() {
   return filtered.slice(0, limit);
 }
 
-function renderTable() {
+function gridColumnCount() {
+  const mode = $('gridCols')?.value || 'auto';
+  const custom = $('gridCustomCols');
+  let count = mode === 'auto' ? (isMobileLayout() ? 2 : 5) : mode === 'custom' ? num(custom?.value) : num(mode);
+  if (count === null) count = isMobileLayout() ? 2 : 5;
+  return Math.max(1, Math.min(24, Math.round(count)));
+}
+
+function applyGridColumnSetting() {
+  const grid = $('gridView');
+  const custom = $('gridCustomCols');
+  const controls = $('gridControls');
+  if (!grid) return;
+  const count = gridColumnCount();
+  grid.style.setProperty('--grid-cols', String(count));
+  grid.dataset.density = count >= 13 ? 'ultra' : count >= 9 ? 'dense' : 'normal';
+  if (custom) custom.hidden = $('gridCols')?.value !== 'custom';
+  if (controls) controls.classList.toggle('active', viewMode === 'grid');
+}
+
+function syncViewMode() {
+  const isGrid = viewMode === 'grid';
+  const tableWrap = document.querySelector('.table-wrap');
+  const grid = $('gridView');
+  if (tableWrap) tableWrap.hidden = isGrid;
+  if (grid) grid.hidden = !isGrid;
+  $('listViewBtn')?.classList.toggle('active', !isGrid);
+  $('gridViewBtn')?.classList.toggle('active', isGrid);
+  $('listViewBtn')?.setAttribute('aria-pressed', String(!isGrid));
+  $('gridViewBtn')?.setAttribute('aria-pressed', String(isGrid));
+  applyGridColumnSetting();
+}
+
+function renderGrid(rows) {
+  const grid = $('gridView');
+  if (!grid) return;
+  applyGridColumnSetting();
+  grid.innerHTML = rows.map(gridCardHtml).join('') || '<div class="grid-empty">No stickers match the active filters.</div>';
+}
+
+function renderResults() {
   const rows = displayedRows();
-  $('tbody').innerHTML = rows.map(rowHtml).join('') || `<tr><td colspan="7" class="empty">No stickers match the active filters.</td></tr>`;
+  syncViewMode();
+  if (viewMode === 'grid') {
+    $('tbody').innerHTML = '';
+    renderGrid(rows);
+  } else {
+    const grid = $('gridView');
+    if (grid) grid.innerHTML = '';
+    $('tbody').innerHTML = rows.map(rowHtml).join('') || `<tr><td colspan="7" class="empty">No stickers match the active filters.</td></tr>`;
+  }
   $('visibleCount').textContent = `${rows.length.toLocaleString()}/${filtered.length.toLocaleString()}`;
   $('totalCount').textContent = records.length.toLocaleString();
   const expected = filtered.map(r => num(r.expected_return_pct)).filter(v => v !== null);
@@ -2015,15 +2571,68 @@ function updateMobileFilterSummary() {
     : 'Tap to refine';
 }
 
+function setViewMode(mode) {
+  viewMode = mode === 'grid' ? 'grid' : 'list';
+  renderResults();
+}
+
+function openStickerModal(id) {
+  const r = recordById.get(String(id));
+  const modal = $('detailModal');
+  const content = $('modalContent');
+  if (!r || !modal || !content) return;
+  content.innerHTML = stickerDetailsHtml(r);
+  modal.hidden = false;
+  document.body.style.overflow = 'hidden';
+  $('modalClose')?.focus({preventScroll:true});
+}
+
+function closeStickerModal() {
+  const modal = $('detailModal');
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  document.body.style.overflow = '';
+  const content = $('modalContent');
+  if (content) content.innerHTML = '';
+}
+
+function setupDetailModal() {
+  const grid = $('gridView');
+  if (grid) {
+    grid.addEventListener('click', event => {
+      const card = event.target && event.target.closest ? event.target.closest('.grid-card') : null;
+      if (card) openStickerModal(card.dataset.id);
+    });
+  }
+  $('modalClose')?.addEventListener('click', closeStickerModal);
+  document.querySelector('[data-close-modal]')?.addEventListener('click', closeStickerModal);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeStickerModal();
+  });
+}
+
 function wire() {
   makeOptions();
   setupFilterPanel();
   ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','rowLimit','scoredFilter']
     .forEach(id => $(id).addEventListener('input', applyFilters));
+  $('listViewBtn')?.addEventListener('click', () => setViewMode('list'));
+  $('gridViewBtn')?.addEventListener('click', () => setViewMode('grid'));
+  $('gridCols')?.addEventListener('input', () => {
+    applyGridColumnSetting();
+    if (viewMode === 'grid') renderResults();
+  });
+  $('gridCustomCols')?.addEventListener('input', () => {
+    applyGridColumnSetting();
+    if (viewMode === 'grid') renderResults();
+  });
   $('resetBtn').addEventListener('click', () => {
     ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','scoredFilter']
       .forEach(id => $(id).value = '');
     $('rowLimit').value = '120';
+    viewMode = 'list';
+    $('gridCols').value = 'auto';
+    $('gridCustomCols').value = '';
     sortKey = 'priority_rank';
     sortDir = 1;
     $('sortHint').textContent = 'Sorted by priority rank';
@@ -2041,6 +2650,7 @@ function wire() {
     applyFilters();
   }));
   setupSparkTooltip();
+  setupDetailModal();
   applyFilters();
 }
 
