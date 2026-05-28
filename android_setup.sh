@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 pkg update -y
-pkg install -y python git ca-certificates openssl
+pkg install -y python git ca-certificates openssl python-bs4
 
 if ! python - <<'PY' >/dev/null 2>&1
 import numpy
@@ -25,9 +25,6 @@ import numpy
 import pandas
 print("numpy/pandas OK")
 PY
-
-python -m pip install --upgrade pip
-python -m pip install --only-binary=:all: -r android_requirements.txt
 
 mkdir -p data/snapshots data/history analyze visualized
 

@@ -8,7 +8,7 @@ This project can run standalone on Android through Termux. The Android path avoi
 - `android_setup.sh` - installs Termux packages and Python requirements.
 - `android_run.sh` - runs collect, analyze, and visualize.
 - `android_serve.sh` - serves the dashboard to your Android browser.
-- `android_requirements.txt` - lightweight pip requirements.
+- `android_requirements.txt` - notes only; Android setup uses Termux packages, not global pip.
 - `android_verify.py` - confirms output row counts after a run.
 
 ## 1. Install Termux
@@ -48,7 +48,15 @@ Make sure your `data/scores.csv` is present because the analyzer uses your manua
 bash android_setup.sh
 ```
 
-This installs Python, numpy/pandas, and BeautifulSoup. If Termux does not have prebuilt pandas/numpy packages for your phone, the setup script falls back to pip. That can be slow.
+This installs Python, numpy/pandas, and BeautifulSoup from Termux packages. The setup script intentionally avoids global `pip` because Termux blocks it and global pip can break the package-managed Python.
+
+If you see `Installing pip packages is forbidden`, update this project and rerun:
+
+```bash
+bash android_setup.sh
+```
+
+Do not run `pip install pandas` or `pip install beautifulsoup4` globally in Termux.
 
 ## 4. Run The Full Pipeline
 
