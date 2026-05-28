@@ -8,6 +8,7 @@ This project can run standalone on Android through Termux. The Android path avoi
 - `android_setup.sh` - installs Termux packages and Python requirements.
 - `android_run.sh` - runs collect, analyze, and visualize.
 - `android_serve.sh` - serves the dashboard to your Android browser.
+- `android_all.sh` - runs setup, the full pipeline, starts the server, and opens the dashboard.
 - `android_requirements.txt` - notes only; Android setup uses Termux packages, not global pip.
 - `android_verify.py` - confirms output row counts after a run.
 
@@ -59,6 +60,22 @@ bash android_setup.sh
 Do not run `pip install pandas` globally in Termux.
 
 ## 4. Run The Full Pipeline
+
+One-command first run:
+
+```bash
+bash android_all.sh --metadata-workers 2
+```
+
+Daily run after setup is already complete:
+
+```bash
+bash android_all.sh --skip-setup --metadata-workers 2
+```
+
+This keeps a local web server running and opens the dashboard in your Android browser. Keep Termux open while viewing it; press `Ctrl+C` to stop.
+
+Manual pipeline:
 
 ```bash
 bash android_run.sh
@@ -121,6 +138,12 @@ Run the full pipeline with lower metadata concurrency:
 
 ```bash
 bash android_run.sh --metadata-workers 2
+```
+
+Run everything and open the dashboard:
+
+```bash
+bash android_all.sh --skip-setup --metadata-workers 2
 ```
 
 Verify the latest output at any time:

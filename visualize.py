@@ -973,6 +973,8 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .stat { padding:10px 12px; border:1px solid var(--line); border-radius:7px; background:rgba(16,24,34,.74); }
   .stat span { display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
   .stat b { display:block; font-size:20px; line-height:1.05; font-variant-numeric:tabular-nums; }
+  .filter-panel { margin:12px 0; }
+  .filter-panel > summary { display:none; }
   .filters {
     position:sticky;
     top:0;
@@ -980,7 +982,7 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     display:grid;
     grid-template-columns:minmax(260px,1.25fr) repeat(6, minmax(130px,.6fr)) 120px 112px 118px;
     gap:10px;
-    margin:12px 0;
+    margin:0;
     padding:10px;
     background:rgba(9,13,20,.96);
     border:1px solid rgba(169,180,196,.18);
@@ -1249,11 +1251,123 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     table { min-width:1240px; }
   }
   @media (max-width:800px) {
-    .app { width:calc(100vw - 18px); padding-top:9px; }
-    .filters { grid-template-columns:1fr 1fr; }
-    .stats { grid-template-columns:1fr 1fr; }
-    .sticker-cell { grid-template-columns:142px minmax(0,1fr); }
-    .thumb { width:142px; height:142px; }
+    body { font-size:13px; }
+    .app { width:100%; padding:8px 8px 18px; }
+    .topbar { display:block; padding:14px; border-radius:8px; }
+    h1 { font-size:20px; }
+    .sub { font-size:12px; }
+    .stats { grid-template-columns:1fr 1fr; gap:6px; min-width:0; margin-top:12px; }
+    .stat { padding:8px 9px; }
+    .stat span { font-size:11px; }
+    .stat b { font-size:17px; }
+    .filter-panel {
+      margin:8px 0 10px;
+      overflow:hidden;
+      border:1px solid rgba(169,180,196,.18);
+      border-radius:8px;
+      background:rgba(9,13,20,.96);
+      box-shadow:0 10px 24px rgba(0,0,0,.20);
+    }
+    .filter-panel > summary {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      min-height:42px;
+      padding:10px 12px;
+      color:#edf4ff;
+      cursor:pointer;
+      font-weight:900;
+      list-style:none;
+    }
+    .filter-panel > summary::-webkit-details-marker { display:none; }
+    .filter-summary-sub { color:var(--muted); font-size:11px; font-weight:750; }
+    .filters {
+      position:static;
+      z-index:auto;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+      padding:10px;
+      border:0;
+      border-top:1px solid rgba(169,180,196,.14);
+      border-radius:0;
+      background:transparent;
+      box-shadow:none;
+      backdrop-filter:none;
+    }
+    .filters .field:first-child { grid-column:1 / -1; }
+    .filters .field { min-width:0; }
+    button, input, select { min-height:34px; font-size:13px; }
+    input, select { padding:7px 8px; }
+    .content { gap:10px; }
+    .panel-head { display:block; padding:11px 12px; }
+    .panel-title { font-size:15px; }
+    .hint { font-size:11px; }
+    .table-wrap { max-height:none; overflow:visible; }
+    table { display:block; width:100%; min-width:0; table-layout:auto; }
+    colgroup, thead { display:none; }
+    tbody { display:grid; gap:10px; }
+    tbody tr {
+      display:block;
+      overflow:hidden;
+      border:1px solid rgba(169,180,196,.16);
+      border-radius:10px;
+      background:#101722;
+      box-shadow:0 12px 26px rgba(0,0,0,.18);
+    }
+    tbody tr:nth-child(even) { background:#101722; }
+    tbody tr:hover { background:#101722; box-shadow:0 12px 26px rgba(0,0,0,.18); }
+    tbody tr.release-low-row { border-color:rgba(52,211,153,.35); box-shadow:inset 3px 0 0 #34d399, 0 12px 26px rgba(0,0,0,.18); }
+    tbody tr.release-low-row td:first-child { box-shadow:none; }
+    tbody td {
+      display:block;
+      width:100%;
+      padding:10px 12px;
+      border-bottom:1px solid rgba(152,166,184,.12);
+    }
+    tbody td:last-child { border-bottom:0; }
+    tbody td::before {
+      content:attr(data-label);
+      display:block;
+      margin-bottom:6px;
+      color:var(--muted);
+      font-size:10px;
+      font-weight:900;
+      letter-spacing:.04em;
+      line-height:1;
+      text-transform:uppercase;
+    }
+    tbody td[data-label="Rank"] {
+      display:flex;
+      align-items:center;
+      gap:8px;
+      padding:8px 12px;
+      background:#151f2d;
+    }
+    tbody td[data-label="Rank"]::before { display:none; }
+    .rank { margin:0; font-size:15px; }
+    .tier { height:22px; min-width:28px; padding:0 7px; }
+    .sticker-cell { grid-template-columns:106px minmax(0,1fr); gap:10px; }
+    .thumb { width:106px; height:106px; }
+    .name { font-size:15px; }
+    .meta { margin-top:5px; font-size:11px; }
+    .chips { gap:5px; margin-top:7px; }
+    .chip { padding:3px 6px; font-size:11px; }
+    .actions { margin-top:8px; }
+    .action { min-height:28px; padding:5px 8px; font-size:11px; }
+    .price-main { font-size:26px; }
+    .price-sub { font-size:13px; }
+    .price-range { margin-top:10px; padding-top:9px; }
+    .price-range-row { grid-template-columns:40px minmax(0,1fr); }
+    .price-range-row.prev { margin:0; }
+    .metric-list { gap:6px; }
+    .metric-row { grid-template-columns:minmax(82px,.7fr) minmax(0,1fr); gap:8px; }
+    .metric-row span { font-size:11px; }
+    .metric-row b { font-size:13px; }
+    .spark { height:80px; }
+    .spark-tip { max-width:230px; font-size:11px; }
+    .note-block { gap:8px; font-size:12px; }
+    .footer-note { padding:11px 12px; font-size:11px; }
   }
 </style>
 </head>
@@ -1273,23 +1387,29 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     </div>
   </header>
 
-  <section class="filters" aria-label="Dashboard filters">
-    <div class="field"><label for="search">Search</label><input id="search" placeholder="Sticker, team, player, verdict, notes, price" /></div>
-    <div class="field"><label for="verdictFilter">Decision</label><select id="verdictFilter"><option value="">All decisions</option></select></div>
-    <div class="field"><label for="variantFilter">Variant</label><select id="variantFilter"><option value="">All variants</option></select></div>
-    <div class="field"><label for="typeFilter">Type</label><select id="typeFilter"><option value="">All types</option></select></div>
-    <div class="field"><label for="categoryFilter">Category</label><select id="categoryFilter"><option value="">All categories</option></select></div>
-    <div class="field"><label for="entryFilter">Entry</label><select id="entryFilter"><option value="">All entries</option></select></div>
-    <div class="field"><label for="floodFilter">Flood</label><select id="floodFilter"><option value="">All flood levels</option></select></div>
-    <div class="field"><label for="confidenceFilter">Confidence</label><select id="confidenceFilter"><option value="">Any</option><option value="0.35">35%+</option><option value="0.50">50%+</option><option value="0.70">70%+</option></select></div>
-    <div class="field"><label for="priceMax">Max tokens</label><input id="priceMax" type="number" min="0" step="1" placeholder="Any" /></div>
-    <div class="field"><label for="priceStateFilter">Price state</label><select id="priceStateFilter"><option value="">All</option><option value="current_low">Current low</option><option value="above_low">Above low</option></select></div>
-    <div class="field"><label for="lowGapMax">Within low %</label><input id="lowGapMax" type="number" min="0" step="0.5" placeholder="5 or 10" /></div>
-    <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
-    <div class="field"><label for="rowLimit">Rows</label><select id="rowLimit"><option value="80">80 fastest</option><option value="120" selected>120 balanced</option><option value="200">200</option><option value="400">400</option><option value="0">All slower</option></select></div>
-    <div class="field"><label for="scoredFilter">Scored</label><select id="scoredFilter"><option value="">All</option><option value="true">Scored</option><option value="false">Unscored</option></select></div>
-    <div class="field"><label>&nbsp;</label><button id="resetBtn">Reset</button></div>
-  </section>
+  <details class="filter-panel" id="filterPanel" open>
+    <summary>
+      <span>Filters & Sort</span>
+      <span class="filter-summary-sub" id="mobileFilterSummary">Tap to refine</span>
+    </summary>
+    <section class="filters" aria-label="Dashboard filters">
+      <div class="field"><label for="search">Search</label><input id="search" placeholder="Sticker, team, player, verdict, notes, price" /></div>
+      <div class="field"><label for="verdictFilter">Decision</label><select id="verdictFilter"><option value="">All decisions</option></select></div>
+      <div class="field"><label for="variantFilter">Variant</label><select id="variantFilter"><option value="">All variants</option></select></div>
+      <div class="field"><label for="typeFilter">Type</label><select id="typeFilter"><option value="">All types</option></select></div>
+      <div class="field"><label for="categoryFilter">Category</label><select id="categoryFilter"><option value="">All categories</option></select></div>
+      <div class="field"><label for="entryFilter">Entry</label><select id="entryFilter"><option value="">All entries</option></select></div>
+      <div class="field"><label for="floodFilter">Flood</label><select id="floodFilter"><option value="">All flood levels</option></select></div>
+      <div class="field"><label for="confidenceFilter">Confidence</label><select id="confidenceFilter"><option value="">Any</option><option value="0.35">35%+</option><option value="0.50">50%+</option><option value="0.70">70%+</option></select></div>
+      <div class="field"><label for="priceMax">Max tokens</label><input id="priceMax" type="number" min="0" step="1" placeholder="Any" /></div>
+      <div class="field"><label for="priceStateFilter">Price state</label><select id="priceStateFilter"><option value="">All</option><option value="current_low">Current low</option><option value="above_low">Above low</option></select></div>
+      <div class="field"><label for="lowGapMax">Within low %</label><input id="lowGapMax" type="number" min="0" step="0.5" placeholder="5 or 10" /></div>
+      <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
+      <div class="field"><label for="rowLimit">Rows</label><select id="rowLimit"><option value="80">80 fastest</option><option value="120" selected>120 balanced</option><option value="200">200</option><option value="400">400</option><option value="0">All slower</option></select></div>
+      <div class="field"><label for="scoredFilter">Scored</label><select id="scoredFilter"><option value="">All</option><option value="true">Scored</option><option value="false">Unscored</option></select></div>
+      <div class="field"><label>&nbsp;</label><button id="resetBtn">Reset</button></div>
+    </section>
+  </details>
 
   <main class="content">
     <section class="panel">
@@ -1539,8 +1659,8 @@ function rowHtml(r) {
   const typeLabel = r.display_type || r.category || '-';
   const atReleaseLow = isReleaseLow(r);
   return `<tr class="${atReleaseLow ? 'release-low-row' : ''}">
-    <td><div class="rank">#${esc(r.priority_rank)}</div><div class="tier">${esc(r.priority_tier || '')}</div></td>
-    <td>
+    <td data-label="Rank"><div class="rank">#${esc(r.priority_rank)}</div><div class="tier">${esc(r.priority_tier || '')}</div></td>
+    <td data-label="Sticker">
       <div class="sticker-cell">
         <img class="thumb" src="${esc(image)}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" />
         <div>
@@ -1557,7 +1677,7 @@ function rowHtml(r) {
         </div>
       </div>
     </td>
-    <td>
+    <td data-label="Price">
       <div class="price-main">${money(r.usd_price)}</div>
       <div class="price-sub">${tokens(r.price_tokens)} tokens</div>
       ${lowGapHtml(r)}
@@ -1566,7 +1686,7 @@ function rowHtml(r) {
         <div class="metric-row"><span>Entry</span><b>${esc(r.entry_tier || '-')}</b></div>
       </div>
     </td>
-    <td>
+    <td data-label="Decision">
       <span class="verdict" style="background:${vcolor}">${esc(r.verdict || '-')}</span>
       <div class="metric-list">
         <div class="metric-row"><span>Priority</span><b>${fmt(r.priority_score,1)}</b></div>
@@ -1574,7 +1694,7 @@ function rowHtml(r) {
         <div class="metric-row"><span>Confidence</span><b>${fmt(r.prediction_confidence,2)}</b></div>
       </div>
     </td>
-    <td>
+    <td data-label="Edge & Scores">
       <div class="metric-list" style="margin-top:0">
         <div class="metric-row"><span>Expected</span><b class="${expectedClass}">${pct(r.expected_return_pct,0)}</b></div>
         <div class="metric-row"><span>Value Edge</span><b>${fmt(r.value_edge_score,2)}</b></div>
@@ -1583,7 +1703,7 @@ function rowHtml(r) {
         <div class="metric-row"><span>Manual</span><b>${fmt(r.manual_score_count,0)}</b></div>
       </div>
     </td>
-    <td>
+    <td data-label="Market">
       <div class="metric-list" style="margin-top:0">
         <div class="metric-row"><span>Flood</span><b>${esc(r.flood_risk || '-')} (${fmt(r.flood_risk_score,2)})</b></div>
         <div class="metric-row"><span>Discount</span><b>${pct(r.discount_from_high_pct,0)}</b></div>
@@ -1592,7 +1712,7 @@ function rowHtml(r) {
       </div>
       ${sparkline(points, r)}
     </td>
-    <td>
+    <td data-label="Notes">
       <div class="note-block">
         <div><label>Reason</label><div>${esc(r.quick_reason || '-')}</div></div>
         <div><label>Risk</label><div>${esc(r.risk_note || '-')}</div></div>
@@ -1709,6 +1829,7 @@ function renderTable() {
       ? `Showing ${rows.length.toLocaleString()} of ${filtered.length.toLocaleString()} matched rows for smooth scrolling. Raise Rows or choose All only when needed.`
       : `Showing all ${filtered.length.toLocaleString()} matched rows.`;
   }
+  updateMobileFilterSummary();
 }
 
 function scale(v, a, b, c, d) {
@@ -1865,8 +1986,38 @@ function setupSparkTooltip() {
   });
 }
 
+function isMobileLayout() {
+  return window.matchMedia && window.matchMedia('(max-width: 800px)').matches;
+}
+
+function setupFilterPanel() {
+  const panel = document.getElementById('filterPanel');
+  if (!panel) return;
+  if (isMobileLayout() && panel.dataset.mobileReady !== '1') {
+    panel.removeAttribute('open');
+    panel.dataset.mobileReady = '1';
+  }
+  window.addEventListener('resize', () => {
+    if (!isMobileLayout()) panel.setAttribute('open', '');
+  }, {passive:true});
+}
+
+function updateMobileFilterSummary() {
+  const summary = document.getElementById('mobileFilterSummary');
+  if (!summary) return;
+  const ids = ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','scoredFilter'];
+  const active = ids.reduce((count, id) => {
+    const el = document.getElementById(id);
+    return count + (el && String(el.value || '').trim() ? 1 : 0);
+  }, 0);
+  summary.textContent = active
+    ? `${active} active - ${filtered.length.toLocaleString()} matches`
+    : 'Tap to refine';
+}
+
 function wire() {
   makeOptions();
+  setupFilterPanel();
   ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','rowLimit','scoredFilter']
     .forEach(id => $(id).addEventListener('input', applyFilters));
   $('resetBtn').addEventListener('click', () => {
