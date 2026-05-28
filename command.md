@@ -1,0 +1,1 @@
+python collect.py && python analyze.py && python visualize.py

@@ -1,0 +1,7 @@
+# Android/Termux pip requirements.
+#
+# Install numpy/pandas from Termux packages when possible:
+#   pkg install python-numpy python-pandas
+#
+# This file intentionally keeps pip dependencies light and pure-Python.
+beautifulsoup4>=4.12
