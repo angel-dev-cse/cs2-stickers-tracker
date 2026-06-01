@@ -7,7 +7,7 @@ This project can run standalone on Android through Termux. The Android path avoi
 - `android_collect.py` - phone-friendly collector, no browser required.
 - `android_setup.sh` - installs Termux packages and Python requirements.
 - `android_run.sh` - runs collect, analyze, and visualize.
-- `android_serve.sh` - serves the dashboard to your Android browser.
+- `android_serve.sh` - serves the dashboard and inventory save API to your Android browser.
 - `android_all.sh` - runs setup, the full pipeline, starts the server, and opens the dashboard.
 - `android_requirements.txt` - notes only; Android setup uses Termux packages, not global pip.
 - `android_verify.py` - confirms output row counts after a run.
@@ -169,3 +169,5 @@ For Cologne 2026, a full successful collection should show:
 The Android collector is intentionally separate from `collect.py`. Desktop `collect.py` uses Playwright and is still useful on PC. Android `android_collect.py` is lighter and better suited to Termux.
 
 The dashboard is static HTML, but opening it through `android_serve.sh` is more reliable than opening the file directly from Android storage.
+
+Inventory edits are saved to `Inventory/sticker_inventory.csv` only when the dashboard is opened through `android_serve.sh` or `android_all.sh`. If you open the HTML file directly, the page can still work, but inventory changes stay in browser storage until you download/export the CSV.

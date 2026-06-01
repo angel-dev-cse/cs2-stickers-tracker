@@ -12,4 +12,4 @@ echo
 echo "Open that URL in Chrome/Firefox on this phone."
 echo "Press Ctrl+C in Termux to stop the server."
 
-python -m http.server "${PORT}" --bind 127.0.0.1
+python inventory_server.py "${PORT}"

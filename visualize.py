@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import html
 import json
 import math
+import re
+import time
+import unicodedata
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 import pandas as pd
 import numpy as np
 
@@ -11,6 +19,13 @@ DATA_DIR = Path("data")
 ANALYZE_DIR = Path("analyze")
 OUT_DIR = Path("visualized")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+CSGOSKINS_CACHE_PATH = OUT_DIR / "csgoskins_prices.json"
+FAVORITES_PATH = OUT_DIR / "favorites.json"
+CSGOSKINS_CACHE_TTL_SECONDS = 6 * 60 * 60
+CSGOSKINS_ERROR_RETRY_SECONDS = 4 * 60 * 60
+CSGOSKINS_WORKERS = 3
+CSGOSKINS_GENERATION_FETCH_LIMIT = 90
+UUSKINS_STICKER_CATEGORY_ID = 106
 
 VERDICT_ORDER = {
     "CORE BUY CANDIDATE": 0,
@@ -26,16 +41,16 @@ VERDICT_ORDER = {
 }
 
 VERDICT_COLORS = {
-    "CORE BUY CANDIDATE": "#22c55e",
-    "SMALL BUY": "#84cc16",
-    "CHEAP HISTORY PUNT": "#facc15",
-    "VISUAL CHECK NOW": "#38bdf8",
-    "SCORE FIRST": "#a78bfa",
-    "WAIT FOR DROP": "#fb923c",
-    "DO NOT CHASE": "#ef4444",
-    "FLOOD RISK": "#f43f5e",
-    "SCORE/WAIT": "#cbd5e1",
-    "IGNORE": "#64748b",
+    "CORE BUY CANDIDATE": "#00e676",
+    "SMALL BUY": "#9cff2e",
+    "CHEAP HISTORY PUNT": "#ffd400",
+    "VISUAL CHECK NOW": "#00d5ff",
+    "SCORE FIRST": "#a855f7",
+    "WAIT FOR DROP": "#ff8a00",
+    "DO NOT CHASE": "#ff3b30",
+    "FLOOD RISK": "#ff2b6a",
+    "SCORE/WAIT": "#c7d2fe",
+    "IGNORE": "#6b7280",
 }
 
 
@@ -111,6 +126,557 @@ def safe_float(value, default=None):
 
 def safe_bool(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def rarity_for_variant(variant: str) -> str:
+    value = str(variant or "").lower()
+    if "gold" in value:
+        return "rarity_ancient"
+    if "holo" in value:
+        return "rarity_legendary"
+    if "foil" in value:
+        return "rarity_mythical"
+    return "rarity_rare"
+
+
+def csgoskins_slug(market_hash_name: str, sticker: str) -> str:
+    base = str(market_hash_name or "").strip()
+    if not base:
+        base = f"Sticker | {sticker} | Cologne 2026"
+    normalized = unicodedata.normalize("NFKD", base)
+    normalized = normalized.encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower().replace("&", " and ")
+    normalized = normalized.replace("thunderdownunder", "thunder downunder")
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
+    return normalized.strip("-")
+
+
+def csgoskins_url(market_hash_name: str, sticker: str) -> str:
+    return f"https://csgoskins.gg/items/{csgoskins_slug(market_hash_name, sticker)}"
+
+
+def skinsniper_url_from_csgoskins(url: str) -> str:
+    slug = str(url or "").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if not slug:
+        return ""
+    return f"https://skinsniper.com/stickers/{slug}"
+
+
+def steam_market_url(market_hash_name: str, sticker: str) -> str:
+    name = str(market_hash_name or "").strip()
+    if not name:
+        name = f"Sticker | {sticker} | Cologne 2026"
+    return f"https://steamcommunity.com/market/listings/730/{quote(name, safe='')}"
+
+
+def market_hash_from_csgoskins_url(url: str) -> str:
+    slug = str(url or "").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if slug.startswith("sticker-"):
+        slug = slug[len("sticker-"):]
+    if slug.endswith("-cologne-2026"):
+        slug = slug[: -len("-cologne-2026")]
+    variant = ""
+    for suffix, label in (("-holo", "Holo"), ("-foil", "Foil"), ("-gold", "Gold")):
+        if slug.endswith(suffix):
+            slug = slug[: -len(suffix)]
+            variant = label
+            break
+    base = slug.replace("-", " ").strip()
+    if variant:
+        return f"Sticker | {base} ({variant}) | Cologne 2026"
+    return f"Sticker | {base} | Cologne 2026"
+
+
+def normalize_market_hash(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def read_csgoskins_cache() -> dict[str, dict[str, object]]:
+    if not CSGOSKINS_CACHE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CSGOSKINS_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+
+
+def write_csgoskins_cache(cache: dict[str, dict[str, object]]) -> None:
+    CSGOSKINS_CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def read_favorites() -> set[str]:
+    if not FAVORITES_PATH.exists():
+        return set()
+    try:
+        payload = json.loads(FAVORITES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    values = payload.get("favorites", payload) if isinstance(payload, dict) else payload
+    if not isinstance(values, list):
+        return set()
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def csgoskins_text(raw_html: str) -> str:
+    text = html.unescape(re.sub(r"<[^>]+>", " ", raw_html))
+    return re.sub(r"\s+", " ", text)
+
+
+def prices_from_text(text: str) -> list[float]:
+    values = [
+        safe_float(match.replace(",", ""), None)
+        for match in re.findall(r"\$([0-9][0-9,.]*)", text)
+    ]
+    return [price for price in values if price is not None and price > 0]
+
+
+def parse_marketplace_offer(text: str, aliases: list[str]) -> float | None:
+    lower = text.lower()
+    prices: list[float] = []
+    for alias in aliases:
+        pattern = re.escape(alias.lower())
+        for match in re.finditer(pattern, lower):
+            segment = text[match.start(): match.start() + 520]
+            found = prices_from_text(segment)
+            if found:
+                prices.append(found[0])
+    return min(prices) if prices else None
+
+
+def parse_csgoskins_prices(raw_html: str) -> dict[str, object]:
+    text = csgoskins_text(raw_html)
+    normal_match = re.search(r"\bNormal\s*\$([0-9][0-9,.]*)", text, flags=re.IGNORECASE)
+    normal_price = safe_float(normal_match.group(1).replace(",", ""), None) if normal_match else None
+
+    active_start = text.lower().find("active offers")
+    active_text = text[active_start:active_start + 9000] if active_start >= 0 else text
+    active_prices = prices_from_text(active_text)
+    markets = {
+        "CSFloat": parse_marketplace_offer(active_text, ["CSFloat", "CS Float"]),
+        "UUSkins": parse_marketplace_offer(active_text, ["UUSKINS", "UU SKINS", "UUSkins"]),
+    }
+    markets = {key: value for key, value in markets.items() if value is not None}
+    candidates = list(active_prices)
+    if normal_price is not None:
+        candidates.append(normal_price)
+    candidates.extend(markets.values())
+    return {"price": min(candidates) if candidates else None, "markets": markets}
+
+
+def parse_csgoskins_price(raw_html: str) -> float | None:
+    return safe_float(parse_csgoskins_prices(raw_html).get("price"), None)
+
+
+def parse_skinsniper_market_prices(raw_html: str) -> dict[str, float]:
+    markets: dict[str, float] = {}
+    aliases = {
+        "CSFloat": ["CSFloat", "CS Float"],
+        "UUSkins": ["UUSkins", "UUSKINS", "UU SKINS"],
+    }
+    lower_html = raw_html.lower()
+    for market_name, market_aliases in aliases.items():
+        prices: list[float] = []
+        for alias in market_aliases:
+            start = 0
+            needle = alias.lower()
+            while True:
+                idx = lower_html.find(needle, start)
+                if idx < 0:
+                    break
+                segment = raw_html[idx: idx + 5200]
+                price_match = re.search(
+                    r'class="market-price"[^>]*>\s*\$([0-9][0-9,.]*)',
+                    segment,
+                    flags=re.IGNORECASE,
+                )
+                if price_match:
+                    price = safe_float(price_match.group(1).replace(",", ""), None)
+                    if price is not None and price > 0:
+                        prices.append(price)
+                start = idx + max(1, len(needle))
+        if prices:
+            markets[market_name] = min(prices)
+    return markets
+
+
+def fetch_skinsniper_markets(csgoskins_item_url: str) -> dict[str, object]:
+    url = skinsniper_url_from_csgoskins(csgoskins_item_url)
+    if not url:
+        return {"markets": {}, "status": "no_skinsniper_url"}
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            raw_html = response.read().decode("utf-8", "ignore")
+    except HTTPError as exc:
+        return {"markets": {}, "status": f"skinsniper HTTP {exc.code}", "source_url": url}
+    except (URLError, TimeoutError, OSError) as exc:
+        return {"markets": {}, "status": f"skinsniper {exc.__class__.__name__}", "source_url": url}
+
+    markets = parse_skinsniper_market_prices(raw_html)
+    return {
+        "markets": markets,
+        "status": "ok" if markets else "no_skinsniper_market_detail",
+        "source_url": url,
+    }
+
+
+def parse_uuskins_spu_price(payload: dict[str, object], market_hash_name: str) -> float | None:
+    target = normalize_market_hash(market_hash_name)
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    items = data.get("items") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        return None
+    candidates: list[float] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        names = [
+            normalize_market_hash(item.get("hashName", "")),
+            normalize_market_hash(item.get("name", "")),
+        ]
+        if target and target not in names:
+            continue
+        for field in ("minPrice", "pointMinPrice"):
+            price = safe_float(item.get(field), None)
+            if price is not None and price > 0:
+                candidates.append(price)
+    return min(candidates) if candidates else None
+
+
+def fetch_uuskins_market_price(market_hash_name: str) -> dict[str, object]:
+    name = str(market_hash_name or "").strip()
+    if not name:
+        return {"price": None, "status": "no_uuskins_name"}
+    url = "https://api.uuskins.com/api/vertex/commodity/query/spu/list"
+    payload = {
+        "language": "en",
+        "appId": "730",
+        "businessType": 1,
+        "categoryId": UUSKINS_STICKER_CATEGORY_ID,
+        "pageIndex": 1,
+        "pageSize": 5,
+        "sortType": 2,
+        "keyword": name,
+    }
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/json",
+            "Origin": "https://www.uuskins.com",
+            "Referer": f"https://www.uuskins.com/items?search_word={quote(name, safe='')}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", "ignore")
+        parsed = json.loads(body)
+    except HTTPError as exc:
+        return {"price": None, "status": f"uuskins HTTP {exc.code}", "source_url": url}
+    except (URLError, TimeoutError, OSError) as exc:
+        return {"price": None, "status": f"uuskins {exc.__class__.__name__}", "source_url": url}
+    except json.JSONDecodeError:
+        return {"price": None, "status": "uuskins bad_json", "source_url": url}
+
+    if not isinstance(parsed, dict):
+        return {"price": None, "status": "uuskins bad_payload", "source_url": url}
+    price = parse_uuskins_spu_price(parsed, name)
+    return {
+        "price": price,
+        "status": "ok" if price is not None else f"uuskins no_match code {parsed.get('code', '-')}",
+        "source_url": url,
+    }
+
+
+def has_market_detail(entry: dict[str, object]) -> bool:
+    markets = entry.get("markets") if isinstance(entry, dict) else {}
+    if not isinstance(markets, dict):
+        return False
+    has_csfloat = safe_float(markets.get("CSFloat"), None) is not None
+    has_uuskins = safe_float(markets.get("UUSkins"), None) is not None
+    uuskins_checked = "uuskins_status" in entry
+    return has_csfloat and (has_uuskins or uuskins_checked)
+
+
+def fetch_csgoskins_price(url: str, market_hash_name: str = "", sticker: str = "") -> dict[str, object]:
+    resolved_market_hash_name = str(market_hash_name or "").strip() or market_hash_from_csgoskins_url(url)
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    last_status = "error"
+    result: dict[str, object] = {"price": None, "markets": {}, "status": "error", "fetched_at": int(time.time())}
+    for attempt in range(2):
+        now = int(time.time())
+        try:
+            with urlopen(request, timeout=8) as response:
+                raw_html = response.read().decode("utf-8", "ignore")
+            parsed = parse_csgoskins_prices(raw_html)
+            price = safe_float(parsed.get("price"), None)
+            markets = parsed.get("markets") if isinstance(parsed.get("markets"), dict) else {}
+            result = {
+                "price": price,
+                "markets": markets,
+                "market_sources": {key: "CSGOSkins" for key in markets},
+                "status": "ok" if price is not None else "no_price",
+                "fetched_at": now,
+            }
+            break
+        except HTTPError as exc:
+            last_status = f"error: HTTP {exc.code}"
+        except (URLError, TimeoutError, OSError) as exc:
+            last_status = f"error: {exc.__class__.__name__}"
+        if attempt < 1:
+            time.sleep(0.35 * (attempt + 1))
+    else:
+        result = {"price": None, "markets": {}, "status": last_status, "fetched_at": int(time.time())}
+
+    markets = result.get("markets") if isinstance(result.get("markets"), dict) else {}
+    if "CSFloat" not in markets or "UUSkins" not in markets:
+        fallback = fetch_skinsniper_markets(url)
+        fallback_markets = fallback.get("markets") if isinstance(fallback.get("markets"), dict) else {}
+        if fallback_markets:
+            merged_markets = {**markets, **fallback_markets}
+            candidates = [safe_float(result.get("price"), None)] + [
+                safe_float(price, None) for price in merged_markets.values()
+            ]
+            candidates = [price for price in candidates if price is not None and price > 0]
+            result["price"] = min(candidates) if candidates else result.get("price")
+            result["markets"] = merged_markets
+            result["market_sources"] = {
+                **({} if not isinstance(result.get("market_sources"), dict) else result.get("market_sources")),
+                **{key: "SkinSniper" for key in fallback_markets},
+            }
+            result["fallback_status"] = fallback.get("status")
+            result["fallback_url"] = fallback.get("source_url")
+            if str(result.get("status", "")).startswith("error"):
+                result["last_error"] = result.get("status")
+            if result.get("price") is not None:
+                result["status"] = "ok"
+        elif str(result.get("status", "")).startswith("error"):
+            result["fallback_status"] = fallback.get("status")
+            result["fallback_url"] = fallback.get("source_url")
+
+    markets = result.get("markets") if isinstance(result.get("markets"), dict) else {}
+    if "UUSkins" not in markets and resolved_market_hash_name:
+        uuskins = fetch_uuskins_market_price(resolved_market_hash_name)
+        uuskins_price = safe_float(uuskins.get("price"), None)
+        result["uuskins_status"] = uuskins.get("status")
+        if uuskins_price is not None:
+            markets = {**markets, "UUSkins": uuskins_price}
+            candidates = [safe_float(result.get("price"), None)] + [
+                safe_float(price, None) for price in markets.values()
+            ]
+            candidates = [price for price in candidates if price is not None and price > 0]
+            result["price"] = min(candidates) if candidates else result.get("price")
+            result["markets"] = markets
+            result["market_sources"] = {
+                **({} if not isinstance(result.get("market_sources"), dict) else result.get("market_sources")),
+                "UUSkins": "UUSkins",
+            }
+            if str(result.get("status", "")).startswith("error"):
+                result["last_error"] = result.get("status")
+            if result.get("price") is not None:
+                result["status"] = "ok"
+    return result
+
+
+def merge_csgoskins_cache_entry(previous: dict[str, object], result: dict[str, object]) -> dict[str, object]:
+    previous = previous if isinstance(previous, dict) else {}
+    result = result if isinstance(result, dict) else {}
+    result_status = str(result.get("status", "error"))
+    previous_status = str(previous.get("status", ""))
+
+    def lowest_known_price(*entries: dict[str, object]) -> float | None:
+        prices: list[float] = []
+        for entry in entries:
+            direct = safe_float(entry.get("price"), None) if isinstance(entry, dict) else None
+            if direct is not None and direct > 0:
+                prices.append(direct)
+            markets = entry.get("markets") if isinstance(entry, dict) else {}
+            if isinstance(markets, dict):
+                for value in markets.values():
+                    price = safe_float(value, None)
+                    if price is not None and price > 0:
+                        prices.append(price)
+        return min(prices) if prices else None
+
+    if result_status == "ok":
+        merged_markets = {
+            **(previous.get("markets") if isinstance(previous.get("markets"), dict) else {}),
+            **(result.get("markets") if isinstance(result.get("markets"), dict) else {}),
+        }
+        merged_sources = {
+            **(previous.get("market_sources") if isinstance(previous.get("market_sources"), dict) else {}),
+            **(result.get("market_sources") if isinstance(result.get("market_sources"), dict) else {}),
+        }
+        merged = {**previous, **result, "markets": merged_markets, "market_sources": merged_sources}
+        low = lowest_known_price(result, {"markets": merged_markets}, previous)
+        if low is not None:
+            merged["price"] = low
+        return merged
+
+    if previous_status == "ok":
+        merged = {**previous}
+        result_markets = result.get("markets") if isinstance(result.get("markets"), dict) else {}
+        if result_markets:
+            merged["markets"] = {
+                **(previous.get("markets") if isinstance(previous.get("markets"), dict) else {}),
+                **result_markets,
+            }
+        result_sources = result.get("market_sources") if isinstance(result.get("market_sources"), dict) else {}
+        if result_sources:
+            merged["market_sources"] = {
+                **(previous.get("market_sources") if isinstance(previous.get("market_sources"), dict) else {}),
+                **result_sources,
+            }
+        merged["last_error"] = result_status
+        merged["last_error_at"] = result.get("fetched_at")
+        if result.get("fallback_status"):
+            merged["fallback_status"] = result.get("fallback_status")
+        if result.get("fallback_url"):
+            merged["fallback_url"] = result.get("fallback_url")
+        low = lowest_known_price(result, merged)
+        if low is not None:
+            merged["price"] = low
+        return merged
+
+    return result
+
+
+def enrich_csgoskins_prices(records: list[dict]) -> None:
+    url_variant: dict[str, str] = {}
+    url_favorite: dict[str, bool] = {}
+    url_record: dict[str, dict] = {}
+    favorites = read_favorites()
+    for record in records:
+        url = csgoskins_url(str(record.get("market_hash_name", "")), str(record.get("sticker", "")))
+        record["csgoskins_url"] = url
+        record["csgoskins_low_usd"] = None
+        record["csgoskins_markets"] = {}
+        record["csfloat_low_usd"] = None
+        record["uuskins_low_usd"] = None
+        record["csgoskins_status"] = "pending"
+        record["csgoskins_market_sources"] = {}
+        url_record[url] = record
+        variant = str(record.get("variant") or "")
+        if "holo" in variant.lower():
+            url_variant[url] = "Holo"
+        elif "foil" in variant.lower():
+            url_variant[url] = "Foil"
+        elif "gold" in variant.lower():
+            url_variant[url] = "Gold"
+        else:
+            url_variant[url] = "Paper"
+        favorite_keys = {
+            str(record.get("sticker_id", "")).strip(),
+            str(record.get("market_hash_name", "")).strip(),
+            str(record.get("sticker", "")).strip(),
+        }
+        url_favorite[url] = bool(favorites.intersection(favorite_keys))
+
+    cache = read_csgoskins_cache()
+    now = time.time()
+    eligible = {"Holo", "Foil"}
+    urls = {
+        str(record["csgoskins_url"])
+        for record in records
+        if record.get("csgoskins_url") and url_variant.get(str(record["csgoskins_url"])) in eligible
+    }
+    missing = [
+        url for url in urls
+        if (
+            not cache.get(url)
+            or (
+                cache[url].get("status") == "ok"
+                and not has_market_detail(cache[url])
+            )
+            or (
+                cache[url].get("status") != "ok"
+                and now - float(cache[url].get("fetched_at", 0) or 0) > CSGOSKINS_ERROR_RETRY_SECONDS
+            )
+            or now - float(cache[url].get("fetched_at", 0) or 0) > CSGOSKINS_CACHE_TTL_SECONDS
+        )
+    ]
+
+    if missing:
+        favorite_urls = sorted([url for url in missing if url_favorite.get(url)])
+        holo_urls = sorted([url for url in missing if not url_favorite.get(url) and url_variant.get(url) == "Holo"])
+        foil_urls = sorted([url for url in missing if not url_favorite.get(url) and url_variant.get(url) == "Foil"])
+        remaining_budget = max(0, CSGOSKINS_GENERATION_FETCH_LIMIT - len(favorite_urls))
+        selected_holo = holo_urls[:remaining_budget]
+        remaining_budget = max(0, remaining_budget - len(selected_holo))
+        selected_foil = foil_urls[:remaining_budget]
+        selected_total = len(favorite_urls) + len(selected_holo) + len(selected_foil)
+        skipped = len(missing) - selected_total
+        print(f"Fetching CSGOSkins prices: {selected_total} prioritized URLs of {len(missing)} stale/missing Holo/Foil URLs")
+        if skipped > 0:
+            print(f"  CSGOSkins skipped this run: {skipped} URLs. Use dashboard fetch buttons to refresh specific stickers.")
+        groups = [
+            ("favorites", favorite_urls),
+            ("holo", selected_holo),
+            ("foil", selected_foil),
+        ]
+        for group_name, group_urls in groups:
+            if not group_urls:
+                continue
+            print(f"  CSGOSkins {group_name}: {len(group_urls)} URLs")
+            with ThreadPoolExecutor(max_workers=min(CSGOSKINS_WORKERS, len(group_urls))) as executor:
+                future_map = {
+                    executor.submit(
+                        fetch_csgoskins_price,
+                        url,
+                        str(url_record.get(url, {}).get("market_hash_name", "")),
+                        str(url_record.get(url, {}).get("sticker", "")),
+                    ): url
+                    for url in group_urls
+                }
+                for future in as_completed(future_map):
+                    url = future_map[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {"price": None, "markets": {}, "status": f"error: {exc.__class__.__name__}", "fetched_at": int(time.time())}
+                    cache[url] = merge_csgoskins_cache_entry(cache.get(url, {}), result)
+        write_csgoskins_cache(cache)
+
+    for record in records:
+        url = str(record.get("csgoskins_url"))
+        if url_variant.get(url) not in eligible:
+            record["csgoskins_low_usd"] = None
+            record["csgoskins_status"] = "not_requested"
+            continue
+        entry = cache.get(url, {})
+        markets = entry.get("markets") if isinstance(entry.get("markets"), dict) else {}
+        price_candidates = [safe_float(entry.get("price"), None)]
+        price_candidates.extend(safe_float(price, None) for price in markets.values())
+        price_candidates = [price for price in price_candidates if price is not None and price > 0]
+        record["csgoskins_low_usd"] = min(price_candidates) if price_candidates else None
+        record["csgoskins_markets"] = markets
+        record["csfloat_low_usd"] = safe_float(markets.get("CSFloat"), None)
+        record["uuskins_low_usd"] = safe_float(markets.get("UUSkins"), None)
+        record["csgoskins_status"] = str(entry.get("status", "not_cached"))
+        record["csgoskins_market_sources"] = entry.get("market_sources") if isinstance(entry.get("market_sources"), dict) else {}
 
 
 def short_text(value: str, limit: int = 76) -> str:
@@ -318,6 +884,8 @@ def row_to_record(row: pd.Series) -> dict:
     name = str(val("sticker", ""))
     item_url = str(val("item_url", ""))
     variant = str(val("variant", "")).strip()
+    market_hash_name = str(val("market_hash_name", ""))
+    steam_url = str(val("steam_market_url", "")).strip() or steam_market_url(market_hash_name, name)
     sticker_type = str(val("sticker_type", "")).strip()
     catalog_type = str(val("catalog_type", "")).strip()
     display_type = sticker_type or catalog_type or str(val("category", "")).strip()
@@ -387,6 +955,9 @@ def row_to_record(row: pd.Series) -> dict:
         "position_in_range": safe_float(val("position_in_range"), None),
         "crowding_percentile": safe_float(val("crowding_percentile"), None),
         "flood_risk_score": safe_float(val("flood_risk_score"), None),
+        "latest_popularity": safe_float(val("latest_popularity"), None),
+        "positive_popularity_sum": safe_float(val("positive_popularity_sum"), None),
+        "absolute_popularity_pressure": safe_float(val("absolute_popularity_pressure"), None),
         "snapshot_price_change_pct": safe_float(val("snapshot_price_change_pct"), None),
         "snapshot_price_velocity_pct_per_day": safe_float(val("snapshot_price_velocity_pct_per_day"), None),
         "snapshot_price_slope": safe_float(val("snapshot_price_slope"), None),
@@ -409,8 +980,10 @@ def row_to_record(row: pd.Series) -> dict:
         "scored": safe_bool(val("scored", False)),
         "image_url": str(val("image_url", "")),
         "item_url": item_url,
-        "market_hash_name": str(val("market_hash_name", "")),
+        "market_hash_name": market_hash_name,
+        "steam_market_url": steam_url,
         "metadata_status": str(val("metadata_status", "")),
+        "rarity_id": rarity_for_variant(variant),
         "sticker_id": str(val("sticker_id", "")),
     }
 
@@ -424,7 +997,7 @@ def write_priority_csv(df: pd.DataFrame) -> None:
         "quality_score", "history_score", "decision_score", "trend_score", "value_edge_score",
         "expected_return_pct", "demand_momentum_score", "demand_price_divergence_score",
         "prediction_confidence", "score_confidence", "quick_reason", "risk_note", "action_note",
-        "item_url", "image_url", "market_hash_name", "metadata_status",
+        "item_url", "image_url", "market_hash_name", "steam_market_url", "metadata_status",
     ]
     cols = [c for c in cols if c in df.columns]
     df[cols].to_csv(OUT_DIR / "priority_board_ui.csv", index=False, encoding="utf-8-sig")
@@ -704,7 +1277,7 @@ function sparkline(points, width=320, height=96) {
   return `<svg class="spark" viewBox="0 0 ${width} ${height}" aria-label="trend"><path class="area" d="${area}" fill="${stroke}"></path><path class="line" d="${line}" stroke="${stroke}"></path><circle class="dot" cx="${coords.at(-1)[0].toFixed(1)}" cy="${coords.at(-1)[1].toFixed(1)}" r="4" fill="${stroke}"></circle></svg>`;
 }
 
-function rowHtml(r) {
+  function rowHtml(r) {
   const points = historySeries[r.sticker_id] || [];
   const vcolor = colorForVerdict(r.verdict);
   const ret = Number(r.recent_return_pct);
@@ -911,6 +1484,7 @@ wire();
 def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     data_json = json.dumps(records, ensure_ascii=False).replace("</", "<\\/")
     series_json = json.dumps(series, ensure_ascii=False).replace("</", "<\\/")
+    favorites_json = json.dumps(sorted(read_favorites()), ensure_ascii=False).replace("</", "<\\/")
 
     template = r"""<!doctype html>
 <html lang="en">
@@ -920,44 +1494,55 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
 <title>CS2 Sticker Decision Dashboard</title>
 <style>
   :root {
-    --bg:#090d14;
-    --panel:#111822;
-    --panel-2:#151f2d;
-    --panel-3:#1a2635;
-    --line:#263244;
-    --line-soft:#1e2938;
-    --text:#eef3f8;
-    --muted:#a9b4c4;
-    --faint:#78869a;
-    --blue:#5b8cff;
-    --green:#34d399;
-    --yellow:#f6c945;
-    --red:#fb7185;
-    --shadow:0 18px 40px rgba(0,0,0,.26);
+    --bg:#050506;
+    --panel:#111113;
+    --panel-2:#17181b;
+    --panel-3:#202126;
+    --line:rgba(255,255,255,.12);
+    --line-soft:rgba(255,255,255,.075);
+    --text:#f4f7fb;
+    --muted:#a8adb7;
+    --faint:#717783;
+    --blue:#2f7dff;
+    --green:#00e676;
+    --yellow:#ffd400;
+    --red:#ff3b5f;
+    --shadow:0 18px 46px rgba(0,0,0,.42);
   }
   * { box-sizing:border-box; }
   html { color-scheme:dark; }
   body {
     margin:0;
-    background:var(--bg);
+    background:
+      linear-gradient(180deg, #101014 0, #08080a 290px, var(--bg) 100%),
+      linear-gradient(90deg, rgba(47,125,255,.08), rgba(168,85,247,.055) 36%, rgba(255,43,214,.05) 67%, rgba(255,180,0,.055)),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 1px, transparent 1px 86px),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.015) 0 1px, transparent 1px 86px),
+      var(--bg);
     color:var(--text);
     font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size:14px;
     letter-spacing:0;
   }
   a { color:inherit; text-decoration:none; }
+  .rarity-accent {
+    --rarity:#2f7dff;
+    --rarity2:#35e4ff;
+    --rarity-bg:rgba(47,125,255,.22);
+    --rarity-soft:rgba(47,125,255,.11);
+  }
   button, input, select {
     font:inherit;
     color:var(--text);
-    background:#0d1420;
+    background:#111216;
     border:1px solid var(--line);
     border-radius:6px;
     min-height:36px;
   }
   input, select { width:100%; padding:8px 10px; }
   button { padding:8px 12px; cursor:pointer; font-weight:750; }
-  button:hover, a.action:hover { border-color:#4f6f9e; background:#111d2d; }
-  input:focus, select:focus { outline:2px solid rgba(91,140,255,.28); border-color:var(--blue); }
+  button:hover, a.action:hover { border-color:rgba(0,213,255,.58); background:#191b21; }
+  input:focus, select:focus { outline:2px solid rgba(0,213,255,.22); border-color:#00d5ff; }
   .app { width:min(1840px, calc(100vw - 28px)); margin:0 auto; padding:16px 0 28px; }
   .topbar {
     display:grid;
@@ -965,10 +1550,12 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     gap:18px;
     align-items:start;
     padding:18px 20px;
-    background:linear-gradient(135deg, #111822, #0d1420 68%, #111b2b);
+    background:
+      linear-gradient(135deg, rgba(20,30,44,.98), rgba(10,16,25,.97) 62%, rgba(20,27,42,.98)),
+      linear-gradient(90deg, rgba(91,140,255,.10), rgba(52,211,153,.06));
     border:1px solid rgba(169,180,196,.18);
-    border-radius:8px;
-    box-shadow:var(--shadow);
+    border-radius:12px;
+    box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.04);
   }
   h1 { margin:0 0 6px; font-size:24px; line-height:1.1; letter-spacing:0; }
   .sub { margin:0; color:var(--muted); line-height:1.45; max-width:980px; }
@@ -996,10 +1583,10 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .field label { display:block; color:var(--muted); font-size:11px; margin:0 0 4px; }
   .content { display:grid; gap:14px; }
   .panel {
-    background:rgba(17,24,34,.94);
+    background:linear-gradient(180deg, rgba(18,26,38,.96), rgba(12,18,28,.96));
     border:1px solid rgba(169,180,196,.16);
-    border-radius:8px;
-    box-shadow:var(--shadow);
+    border-radius:12px;
+    box-shadow:var(--shadow), inset 0 1px 0 rgba(255,255,255,.035);
     overflow:hidden;
   }
   .panel-head {
@@ -1116,6 +1703,10 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     padding:14px;
   }
   .grid-card {
+    --rarity:#5b8cff;
+    --rarity2:#9cc3ff;
+    --rarity-bg:rgba(91,140,255,.14);
+    --rarity-soft:rgba(91,140,255,.08);
     position:relative;
     display:grid;
     grid-template-rows:auto minmax(0,1fr) auto;
@@ -1123,25 +1714,34 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     min-width:0;
     min-height:262px;
     padding:10px;
-    border:1px solid rgba(169,180,196,.16);
-    border-radius:8px;
+    border:1px solid color-mix(in srgb, var(--rarity) 26%, rgba(169,180,196,.16));
+    border-radius:10px;
     background:
-      radial-gradient(circle at 50% 32%, rgba(91,140,255,.13), transparent 46%),
-      linear-gradient(180deg, rgba(19,29,44,.96), rgba(11,17,27,.98));
+      linear-gradient(180deg, var(--rarity-soft), transparent 42%),
+      linear-gradient(180deg, rgba(21,29,42,.98), rgba(10,15,23,.99));
     color:var(--text);
     text-align:left;
     cursor:pointer;
     font:inherit;
     overflow:hidden;
-    box-shadow:0 12px 28px rgba(0,0,0,.20);
+    box-shadow:0 14px 30px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.04);
     transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
   }
   .grid-card:hover,
   .grid-card:focus-visible {
     transform:translateY(-2px);
-    border-color:rgba(91,140,255,.42);
-    box-shadow:0 16px 34px rgba(0,0,0,.28), inset 0 0 0 1px rgba(91,140,255,.12);
+    border-color:color-mix(in srgb, var(--rarity) 62%, white 6%);
+    box-shadow:0 20px 40px rgba(0,0,0,.34), 0 0 0 1px var(--rarity-bg), inset 0 1px 0 rgba(255,255,255,.05);
     outline:none;
+  }
+  .grid-card::after {
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    bottom:0;
+    height:3px;
+    background:linear-gradient(90deg, var(--rarity), var(--rarity2));
   }
   .grid-card.release-low-card { border-color:rgba(52,211,153,.34); }
   .grid-rank {
@@ -1171,8 +1771,8 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     min-height:24px;
     padding:3px 7px;
     border-radius:999px;
-    background:#dce8ff;
-    color:#0b1220;
+    background:linear-gradient(135deg, var(--rarity), var(--rarity2));
+    color:#07101b;
     font-size:11px;
     font-weight:950;
   }
@@ -1183,6 +1783,9 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     aspect-ratio:1;
     min-height:0;
     padding:18px 6px 6px;
+    border-radius:9px;
+    background:linear-gradient(180deg, rgba(255,255,255,.045), var(--rarity-soft));
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.035);
   }
   .grid-image img {
     width:100%;
@@ -1213,7 +1816,7 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     font-size:11px;
     line-height:1.2;
   }
-  .grid-variant { flex:0 0 auto; padding:2px 5px; border:1px solid var(--line); border-radius:999px; color:#d8e1ee; }
+  .grid-variant { flex:0 0 auto; padding:2px 5px; border:1px solid color-mix(in srgb, var(--rarity) 45%, var(--line)); border-radius:999px; color:#d8e1ee; background:var(--rarity-soft); }
   .grid-team { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .grid-bottom { display:grid; gap:8px; }
   .grid-verdict {
@@ -1338,6 +1941,449 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .grid-view[data-density="ultra"] .grid-verdict-pill { display:block; margin-bottom:4px; padding:3px 4px; font-size:7.5px; }
   .grid-view[data-density="ultra"] .grid-price { font-size:10.5px; }
   .grid-empty { grid-column:1 / -1; padding:38px; text-align:center; color:var(--muted); }
+  .portfolio-focus-grid {
+    display:grid;
+    grid-template-columns:repeat(4, minmax(0,1fr));
+    gap:10px;
+    padding:14px;
+  }
+  .focus-card {
+    --rarity:#5b8cff;
+    --rarity2:#9cc3ff;
+    --rarity-bg:rgba(91,140,255,.14);
+    --rarity-soft:rgba(91,140,255,.08);
+    display:grid;
+    grid-template-columns:72px minmax(0,1fr);
+    gap:10px;
+    align-items:center;
+    padding:10px;
+    border:1px solid color-mix(in srgb, var(--rarity) 28%, rgba(169,180,196,.15));
+    border-radius:10px;
+    background:linear-gradient(145deg, var(--rarity-soft), rgba(10,16,25,.96) 56%);
+    box-shadow:inset 0 -2px 0 var(--rarity-bg);
+  }
+  .focus-card img { width:72px; height:72px; object-fit:contain; filter:drop-shadow(0 10px 14px rgba(0,0,0,.30)); }
+  .focus-title { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
+  .focus-title b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#fff; font-size:13px; }
+  .focus-rank { flex:0 0 auto; color:#dce8ff; font-size:11px; font-weight:950; }
+  .focus-note { margin-top:5px; color:var(--muted); font-size:11px; line-height:1.35; }
+  .focus-meta { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
+  .focus-chip { padding:3px 6px; border-radius:999px; border:1px solid var(--line); background:#0d1420; color:#d8e1ee; font-size:10px; font-weight:850; }
+  .focus-empty { padding:18px 16px; color:var(--muted); line-height:1.45; }
+  .inventory-shell > summary { list-style:none; cursor:pointer; }
+  .inventory-shell > summary::-webkit-details-marker { display:none; }
+  .recommendations-shell > summary { list-style:none; cursor:pointer; }
+  .recommendations-shell > summary::-webkit-details-marker { display:none; }
+  .collapse-cue {
+    flex:0 0 auto;
+    color:var(--muted);
+    font-size:11px;
+    font-weight:900;
+    text-transform:uppercase;
+  }
+  .recommendations-shell[open] .collapse-cue::after { content:"Collapse"; }
+  .recommendations-shell:not([open]) .collapse-cue::after { content:"Expand"; }
+  .inventory-summary-stats { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+  .inventory-stat {
+    min-width:96px;
+    padding:8px 10px;
+    border:1px solid var(--line);
+    border-radius:7px;
+    background:rgba(13,20,32,.78);
+  }
+  .inventory-stat span { display:block; color:var(--muted); font-size:10px; margin-bottom:3px; text-transform:uppercase; }
+  .inventory-stat b { display:block; color:#fff; font-size:15px; font-variant-numeric:tabular-nums; }
+  .inventory-body { display:grid; gap:12px; padding:14px; border-top:1px solid var(--line-soft); }
+  .inventory-form {
+    display:grid;
+    grid-template-columns:minmax(240px,1.4fr) minmax(86px,.42fr) repeat(4, minmax(112px,.68fr)) minmax(180px,1fr) auto;
+    gap:10px;
+    align-items:end;
+  }
+  .inventory-rate-note {
+    grid-column:1 / -1;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:8px;
+    margin-bottom:-2px;
+    color:#aebeda;
+    font-size:12px;
+  }
+  .inventory-rate-note b { color:#edf4ff; font-variant-numeric:tabular-nums; }
+  .inventory-form .field.notes-field { grid-column:auto; }
+  .inventory-form-actions { display:flex; gap:7px; align-items:end; }
+  .inventory-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
+  .inventory-toolbar-left { display:flex; flex-wrap:wrap; align-items:center; gap:9px; }
+  .inventory-toolbar-right { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; }
+  .inventory-grid-controls {
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:3px;
+    border:1px solid rgba(169,180,196,.15);
+    border-radius:8px;
+    background:rgba(8,13,20,.48);
+  }
+  .inventory-grid-controls label { color:var(--muted); font-size:11px; font-weight:850; padding-left:6px; }
+  .inventory-grid-controls select { width:auto; min-width:108px; min-height:30px; padding:5px 8px; }
+  .inventory-grid-controls input { width:72px; min-height:30px; padding:5px 8px; }
+  .inventory-filter-input { width:210px; }
+  .inventory-account-filter { width:160px; }
+  .inventory-sort-filter { width:170px; }
+  .inventory-status { color:var(--muted); font-size:12px; }
+  .inventory-status.ok { color:#86efac; }
+  .inventory-status.warn { color:#f8dfa5; }
+  .inventory-status.error { color:#fecdd3; }
+  .inventory-ops {
+    display:grid;
+    grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);
+    gap:10px;
+  }
+  .inventory-op {
+    border:1px solid rgba(169,180,196,.14);
+    border-radius:8px;
+    background:rgba(8,13,20,.38);
+  }
+  .inventory-op > summary {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:10px 12px;
+    cursor:pointer;
+    list-style:none;
+    color:#edf4ff;
+    font-size:13px;
+    font-weight:900;
+  }
+  .inventory-op > summary::-webkit-details-marker { display:none; }
+  .inventory-op > summary span { color:var(--muted); font-size:11px; font-weight:750; }
+  .inventory-op-body { display:grid; gap:10px; padding:0 12px 12px; }
+  .inventory-op-grid {
+    display:grid;
+    grid-template-columns:repeat(4, minmax(0,1fr));
+    gap:8px;
+    align-items:end;
+  }
+  .inventory-op-grid.three { grid-template-columns:repeat(3, minmax(0,1fr)); }
+  .inventory-op textarea {
+    width:100%;
+    min-height:112px;
+    resize:vertical;
+    padding:9px 10px;
+    border:1px solid var(--line);
+    border-radius:7px;
+    background:#0f1724;
+    color:#edf4ff;
+    font:12px/1.45 Consolas, "SFMono-Regular", monospace;
+  }
+  .inventory-op-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .inventory-op-hint { color:var(--muted); font-size:11px; line-height:1.35; }
+  .check-row {
+    display:flex;
+    align-items:center;
+    gap:7px;
+    color:#c9d5e5;
+    font-size:12px;
+    font-weight:800;
+  }
+  .check-row input { width:16px; min-height:16px; }
+  .inventory-selection-bar {
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:8px 10px;
+    border:1px solid rgba(169,180,196,.13);
+    border-radius:8px;
+    background:rgba(13,20,32,.62);
+  }
+  .inventory-selection-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+  .inventory-selected-count { color:#dbeafe; font-size:12px; font-weight:900; }
+  .inventory-drawer-stats {
+    display:grid;
+    grid-template-columns:repeat(4, minmax(0,1fr));
+    gap:8px;
+    padding:10px 12px;
+    border-top:1px solid rgba(169,180,196,.12);
+    border-bottom:1px solid rgba(169,180,196,.12);
+    background:rgba(8,13,20,.34);
+  }
+  .inventory-drawer-stat {
+    min-width:0;
+    padding:9px 10px;
+    border:1px solid rgba(169,180,196,.14);
+    border-radius:10px;
+    background:rgba(255,255,255,.035);
+  }
+  .inventory-drawer-stat span {
+    display:block;
+    color:var(--muted);
+    font-size:10px;
+    font-weight:900;
+    text-transform:uppercase;
+  }
+  .inventory-drawer-stat b {
+    display:block;
+    margin-top:4px;
+    color:#fff;
+    font-size:16px;
+    font-weight:950;
+    font-variant-numeric:tabular-nums;
+  }
+  .inventory-context-panel {
+    display:grid;
+    grid-template-columns:repeat(4, minmax(0,1fr));
+    gap:8px;
+    margin:12px 0;
+    padding:10px;
+    border:1px solid rgba(169,180,196,.16);
+    border-radius:12px;
+    background:rgba(13,20,32,.72);
+  }
+  .inventory-context-panel .inventory-context-item {
+    min-width:0;
+    padding:8px 9px;
+    border-radius:9px;
+    background:rgba(255,255,255,.04);
+  }
+  .inventory-context-panel span {
+    display:block;
+    color:var(--muted);
+    font-size:10px;
+    font-weight:900;
+    text-transform:uppercase;
+  }
+  .inventory-context-panel b {
+    display:block;
+    margin-top:4px;
+    color:#fff;
+    font-size:14px;
+    font-weight:950;
+    font-variant-numeric:tabular-nums;
+    overflow-wrap:anywhere;
+  }
+  .inventory-context-panel small {
+    display:block;
+    margin-top:3px;
+    color:#9eabbf;
+    font-size:11px;
+    line-height:1.25;
+  }
+  .inventory-list-wrap { overflow:auto; border:1px solid rgba(169,180,196,.13); border-radius:8px; }
+  .inventory-table { min-width:1040px; }
+  .inventory-table th { position:static; }
+  .inventory-table td { padding:10px; }
+  .inventory-table .select-col { width:46px; text-align:center; }
+  .inventory-select-cell { text-align:center; }
+  .inventory-select {
+    width:18px;
+    height:18px;
+    min-height:18px;
+    accent-color:#34d399;
+    cursor:pointer;
+  }
+  .inventory-table tr.inventory-selected-row,
+  .inventory-card.inventory-selected-card {
+    box-shadow:inset 0 0 0 1px rgba(52,211,153,.42);
+    border-color:rgba(52,211,153,.36);
+  }
+  .inventory-sticker-cell { display:grid; grid-template-columns:58px minmax(0,1fr); gap:9px; align-items:center; }
+  .inventory-sticker-cell img { width:58px; height:58px; object-fit:contain; }
+  .inventory-item-title { color:#fff; font-weight:900; line-height:1.2; }
+  .inventory-item-sub { color:var(--muted); font-size:11px; margin-top:3px; }
+  .inventory-actions { display:flex; flex-wrap:wrap; gap:6px; }
+  .mini-btn {
+    min-height:28px;
+    padding:5px 8px;
+    border-radius:6px;
+    font-size:11px;
+    font-weight:850;
+  }
+  .mini-btn.danger { color:#fecdd3; border-color:rgba(251,113,133,.36); }
+  .inventory-grid-view {
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(160px,1fr));
+    gap:12px;
+    perspective:900px;
+  }
+  .inventory-grid-view[hidden], .inventory-list-wrap[hidden] { display:none !important; }
+  .inventory-card {
+    --rarity:#5b8cff;
+    --rarity2:#9cc3ff;
+    --rarity-bg:rgba(91,140,255,.14);
+    --rarity-soft:rgba(91,140,255,.08);
+    position:relative;
+    display:grid;
+    grid-template-rows:minmax(150px,.68fr) auto auto auto;
+    min-width:0;
+    min-height:352px;
+    gap:8px;
+    padding:10px;
+    border:1px solid color-mix(in srgb, var(--rarity) 30%, rgba(169,180,196,.14));
+    border-radius:12px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.045), transparent 18%),
+      linear-gradient(180deg, var(--rarity-soft), transparent 52%),
+      linear-gradient(180deg, rgba(20,27,39,.98), rgba(9,14,22,.99));
+    box-shadow:0 16px 32px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05);
+    overflow:hidden;
+    transform:translateZ(0);
+    transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+  }
+  .inventory-card::before {
+    content:"";
+    position:absolute;
+    left:0;
+    right:0;
+    bottom:0;
+    height:4px;
+    background:linear-gradient(90deg, var(--rarity), var(--rarity2));
+    z-index:2;
+  }
+  .inventory-card:hover {
+    transform:translateY(-3px) rotateX(1deg);
+    border-color:color-mix(in srgb, var(--rarity) 64%, white 4%);
+    box-shadow:0 22px 42px rgba(0,0,0,.38), 0 0 0 1px var(--rarity-bg), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .inventory-card-select {
+    position:absolute;
+    top:8px;
+    right:8px;
+    z-index:2;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:30px;
+    height:30px;
+    padding:0;
+    border:1px solid rgba(169,180,196,.20);
+    border-radius:999px;
+    background:rgba(8,13,20,.72);
+    color:#dbeafe;
+    backdrop-filter:blur(8px);
+  }
+  .inventory-card-select input { margin:0; }
+  .inventory-card-art {
+    position:relative;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:142px;
+    height:100%;
+    padding:10px 12px 6px;
+    border-radius:10px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.065), rgba(255,255,255,.01)),
+      linear-gradient(180deg, var(--rarity-bg), rgba(8,13,20,.12));
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.04);
+  }
+  .inventory-card-art img {
+    width:100%;
+    height:100%;
+    object-fit:contain;
+    filter:drop-shadow(0 14px 18px rgba(0,0,0,.38));
+    transition:transform .18s ease;
+  }
+  .inventory-card:hover .inventory-card-art img { transform:scale(1.045); }
+  .inventory-card-title {
+    display:block;
+    min-width:0;
+    overflow:visible;
+    text-overflow:clip;
+    white-space:normal;
+    color:#fff;
+    font-size:13px;
+    font-weight:950;
+    line-height:1.22;
+  }
+  .inventory-card-meta { display:flex; align-items:center; gap:5px; min-width:0; color:var(--muted); font-size:11px; margin-top:5px; }
+  .inventory-card-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .inventory-card-market {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:6px;
+    margin-top:8px;
+  }
+  .inventory-current-price { color:#fff; font-size:18px; font-weight:950; line-height:1; font-variant-numeric:tabular-nums; }
+  .inventory-cost-pill {
+    display:inline-flex;
+    flex-direction:column;
+    align-items:flex-start;
+    justify-content:center;
+    min-height:24px;
+    padding:3px 7px;
+    border-radius:8px;
+    background:rgba(255,255,255,.045);
+    border:1px solid rgba(169,180,196,.13);
+    color:#d8e1ee;
+    font-size:9px;
+    font-weight:850;
+    line-height:1.05;
+  }
+  .inventory-cost-pill b {
+    color:#fff;
+    font-size:11px;
+    font-variant-numeric:tabular-nums;
+  }
+  .inventory-pnl-pill {
+    display:inline-flex;
+    align-items:center;
+    min-height:24px;
+    padding:3px 7px;
+    border-radius:999px;
+    background:rgba(8,13,20,.58);
+    border:1px solid rgba(169,180,196,.14);
+    font-size:11px;
+    font-weight:950;
+    font-variant-numeric:tabular-nums;
+  }
+  .inventory-card-subrow {
+    display:grid;
+    grid-template-columns:1fr;
+    align-items:start;
+    gap:7px;
+    color:var(--muted);
+    font-size:11px;
+    font-weight:800;
+    min-width:0;
+  }
+  .inventory-card-subrow span { min-width:0; overflow:visible; text-overflow:clip; white-space:normal; line-height:1.25; }
+  .inventory-card-actions {
+    display:flex;
+    gap:5px;
+    opacity:1;
+    transform:none;
+    margin-top:auto;
+    transition:opacity .14s ease, transform .14s ease;
+  }
+  .inventory-card:hover .inventory-card-actions,
+  .inventory-card:focus-within .inventory-card-actions { opacity:1; transform:translateY(0); }
+  .inventory-card-actions .mini-btn { flex:1; min-height:26px; padding:4px 6px; font-size:10px; }
+  .inventory-grid-view[data-density="dense"] { gap:9px; }
+  .inventory-grid-view[data-density="dense"] .inventory-card { min-height:322px; padding:8px; border-radius:10px; }
+  .inventory-grid-view[data-density="dense"] .inventory-card-title { font-size:11.2px; line-height:1.2; }
+  .inventory-grid-view[data-density="dense"] .inventory-current-price { font-size:15px; }
+  .inventory-grid-view[data-density="dense"] .inventory-card-art { min-height:134px; padding:8px 7px 5px; }
+  .inventory-grid-view[data-density="ultra"] { gap:7px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-card { min-height:292px; padding:6px; border-radius:8px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-card-art { min-height:112px; padding:7px 4px 4px; border-radius:7px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-card-select { width:24px; height:24px; top:6px; right:6px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-card-title { font-size:10px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-card-meta { display:flex; font-size:9.5px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-card-subrow { display:grid; font-size:9px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-current-price { font-size:13px; }
+  .inventory-grid-view[data-density="ultra"] .inventory-pnl-pill { min-height:20px; padding:2px 5px; font-size:9px; }
+  .inventory-grid-view[data-density="dense"] .inventory-card-actions .mini-btn,
+  .inventory-grid-view[data-density="ultra"] .inventory-card-actions .mini-btn { min-height:24px; padding:3px 5px; font-size:9px; }
+  .inventory-pnl { font-weight:950; }
+  .inventory-pnl.pos { color:#86efac !important; }
+  .inventory-pnl.neg { color:#fecdd3 !important; }
+  .inventory-pnl.flat { color:#d8e1ee !important; }
+  .inventory-empty { padding:18px; color:var(--muted); text-align:center; border:1px dashed rgba(169,180,196,.18); border-radius:8px; }
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
   col.rank-col { width:64px; }
   col.sticker-col { width:28%; }
@@ -1361,9 +2407,16 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   }
   th.sortable { cursor:pointer; }
   th.sortable:hover { color:white; }
-  tbody tr { background:#101722; transition:background-color .14s ease, box-shadow .14s ease; }
+  tbody tr {
+    --rarity:#5b8cff;
+    --rarity2:#9cc3ff;
+    --rarity-bg:rgba(91,140,255,.14);
+    --rarity-soft:rgba(91,140,255,.08);
+    background:#101722;
+    transition:background-color .14s ease, box-shadow .14s ease;
+  }
   tbody tr:nth-child(even) { background:#0e1520; }
-  tbody tr:hover { background:#162233; box-shadow:inset 0 0 0 1px rgba(91,140,255,.14); }
+  tbody tr:hover { background:#162233; box-shadow:inset 0 0 0 1px var(--rarity-bg); }
   tbody tr.release-low-row td:first-child { box-shadow:inset 3px 0 0 #34d399; }
   tbody td {
     padding:14px 10px;
@@ -1380,15 +2433,17 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     object-fit:contain;
     border-radius:7px;
     background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(9,13,20,.94));
-    border:1px solid rgba(169,180,196,.22);
+    border:1px solid color-mix(in srgb, var(--rarity) 30%, rgba(169,180,196,.22));
+    box-shadow:inset 0 -3px 0 var(--rarity-soft);
     transition:transform .14s ease, border-color .14s ease, box-shadow .14s ease;
   }
-  tbody tr:hover .thumb { transform:translateY(-1px); border-color:rgba(91,140,255,.38); box-shadow:0 10px 24px rgba(0,0,0,.20); }
+  tbody tr:hover .thumb { transform:translateY(-1px); border-color:color-mix(in srgb, var(--rarity) 55%, white 6%); box-shadow:0 10px 24px rgba(0,0,0,.20), inset 0 -3px 0 var(--rarity); }
   .name { display:inline; font-size:16px; line-height:1.25; font-weight:900; color:#fff; }
   .name:hover { text-decoration:underline; text-decoration-thickness:1px; }
   .meta { margin-top:7px; color:var(--muted); font-size:12px; line-height:1.4; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
   .chip { display:inline-flex; align-items:center; max-width:100%; padding:4px 7px; border:1px solid var(--line); border-radius:999px; background:rgba(13,20,32,.8); color:#d8e1ee; font-size:12px; line-height:1.2; }
+  .rarity-accent .chip:first-child { border-color:color-mix(in srgb, var(--rarity) 45%, var(--line)); background:var(--rarity-soft); }
   .actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
   .action { display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:6px 9px; border:1px solid var(--line); border-radius:6px; font-weight:800; font-size:12px; }
   .action.primary { color:#c9dbff; border-color:rgba(91,140,255,.58); }
@@ -1598,17 +2653,22 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .modal-content { padding:18px; }
   .modal-grid { display:grid; grid-template-columns:minmax(270px,.9fr) minmax(0,1.1fr); gap:18px; clear:both; }
   .modal-visual {
+    --rarity:#5b8cff;
+    --rarity2:#9cc3ff;
+    --rarity-bg:rgba(91,140,255,.14);
+    --rarity-soft:rgba(91,140,255,.08);
     position:relative;
     display:grid;
     gap:12px;
     align-content:start;
     padding:14px;
-    border:1px solid rgba(169,180,196,.14);
-    border-radius:9px;
-    background:radial-gradient(circle at 50% 38%, rgba(91,140,255,.16), transparent 48%), #0a1019;
+    border:1px solid color-mix(in srgb, var(--rarity) 32%, rgba(169,180,196,.14));
+    border-radius:11px;
+    background:linear-gradient(180deg, var(--rarity-soft), rgba(10,16,25,.98) 55%);
+    box-shadow:inset 0 -4px 0 var(--rarity-bg);
   }
   .modal-visual img { width:100%; max-height:430px; object-fit:contain; filter:drop-shadow(0 18px 22px rgba(0,0,0,.38)); }
-  .modal-rank { position:absolute; top:12px; left:12px; padding:5px 9px; border-radius:999px; background:rgba(8,13,20,.76); border:1px solid rgba(169,180,196,.22); font-weight:950; }
+  .modal-rank { position:absolute; top:12px; left:12px; padding:5px 9px; border-radius:999px; background:rgba(8,13,20,.76); border:1px solid color-mix(in srgb, var(--rarity) 45%, rgba(169,180,196,.22)); font-weight:950; }
   .modal-main { min-width:0; }
   .modal-title-row { display:flex; flex-wrap:wrap; align-items:center; gap:9px; margin-bottom:7px; }
   .modal-title { margin:0; color:#fff; font-size:26px; line-height:1.12; letter-spacing:0; }
@@ -1628,8 +2688,1233 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .empty { padding:38px; text-align:center; color:var(--muted); }
   .footer-note { padding:12px 16px; border-top:1px solid var(--line-soft); color:var(--muted); font-size:12px; line-height:1.45; }
   code { color:#d8e1ee; background:#0b111b; border:1px solid var(--line); padding:1px 5px; border-radius:4px; }
-  @media (max-width:1450px) {
+
+  /* Visual design pass: graphite base, decisive rarity accents, sharper hierarchy. */
+  .topbar {
+    position:relative;
+    overflow:hidden;
+    border-radius:8px;
+    background:
+      linear-gradient(135deg, rgba(25,25,29,.98), rgba(9,9,11,.98) 58%, rgba(17,15,22,.98)),
+      linear-gradient(90deg, rgba(0,213,255,.10), rgba(168,85,247,.10), rgba(255,43,214,.08), rgba(255,180,0,.08));
+    border-color:rgba(255,255,255,.12);
+  }
+  .topbar::before {
+    content:"";
+    position:absolute;
+    inset:0 0 auto;
+    height:3px;
+    background:linear-gradient(90deg, #2f7dff, #35e4ff 25%, #a855f7 50%, #ff2bd6 74%, #ffb000);
+  }
+  h1 { color:#fff; font-weight:950; }
+  .sub { color:#b8bec9; }
+  .stat {
+    border-color:rgba(255,255,255,.12);
+    background:linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.018));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
+  }
+  .stat span { color:#989fab; }
+  .stat b { color:#fff; }
+  .filters {
+    background:rgba(7,7,9,.92);
+    border-color:rgba(255,255,255,.12);
+    box-shadow:0 16px 38px rgba(0,0,0,.36), inset 0 1px 0 rgba(255,255,255,.035);
+  }
+  .field label {
+    color:#9da4af;
+    font-weight:800;
+    letter-spacing:.02em;
+    text-transform:uppercase;
+  }
+  input, select {
+    background:linear-gradient(180deg, #15161b, #101115);
+    border-color:rgba(255,255,255,.12);
+  }
+  button, .mini-btn, .action {
+    background:linear-gradient(180deg, #1a1b20, #121318);
+    border-color:rgba(255,255,255,.13);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  }
+  .panel {
+    border-radius:8px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.045), transparent 110px),
+      linear-gradient(180deg, #121317, #0b0c10);
+    border-color:rgba(255,255,255,.11);
+  }
+  .panel-head {
+    background:linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.012));
+    border-bottom-color:rgba(255,255,255,.075);
+  }
+  .panel-title {
+    color:#fff;
+    font-weight:950;
+  }
+  .hint { color:#a8adb7; }
+  .view-toggle,
+  .grid-controls,
+  .inventory-grid-controls {
+    background:#0d0e11;
+    border-color:rgba(255,255,255,.12);
+  }
+  .view-btn.active {
+    background:linear-gradient(135deg, rgba(47,125,255,.28), rgba(0,213,255,.16));
+    box-shadow:inset 0 0 0 1px rgba(0,213,255,.38);
+    color:#fff;
+  }
+  .grid-card,
+  .inventory-card {
+    border-radius:8px;
+    border-color:color-mix(in srgb, var(--rarity) 58%, rgba(255,255,255,.12));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--rarity) 18%, transparent), transparent 46%),
+      linear-gradient(180deg, #191a1f, #0b0c10 78%);
+    box-shadow:
+      0 16px 38px rgba(0,0,0,.38),
+      0 0 0 1px rgba(255,255,255,.035),
+      inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .grid-card::after,
+  .inventory-card::before {
+    height:5px;
+    background:linear-gradient(90deg, var(--rarity), var(--rarity2));
+    box-shadow:0 0 18px var(--rarity-bg);
+  }
+  .grid-card:hover,
+  .grid-card:focus-visible,
+  .inventory-card:hover {
+    border-color:var(--rarity);
+    box-shadow:
+      0 22px 52px rgba(0,0,0,.48),
+      0 0 0 1px var(--rarity),
+      0 0 30px var(--rarity-bg),
+      inset 0 1px 0 rgba(255,255,255,.08);
+  }
+  .grid-image,
+  .inventory-card-art {
+    border-radius:7px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.01)),
+      linear-gradient(180deg, var(--rarity-bg), rgba(255,255,255,.02));
+    box-shadow:
+      inset 0 0 0 1px rgba(255,255,255,.055),
+      inset 0 -3px 0 var(--rarity);
+  }
+  .grid-tier,
+  .grid-variant {
+    color:#050506;
+    background:linear-gradient(135deg, var(--rarity), var(--rarity2));
+    border-color:rgba(255,255,255,.22);
+    box-shadow:0 0 16px var(--rarity-bg);
+  }
+  .grid-rank,
+  .inventory-card-select,
+  .modal-rank {
+    background:rgba(5,5,6,.74);
+    border-color:rgba(255,255,255,.16);
+  }
+  .inventory-current-price,
+  .grid-price,
+  .price-main {
+    color:#fff;
+    text-shadow:0 1px 14px rgba(255,255,255,.12);
+  }
+  .inventory-pnl-pill,
+  .grid-kpi,
+  .inventory-op,
+  .inventory-selection-bar,
+  .inventory-stat,
+  .modal-section {
+    background:linear-gradient(180deg, rgba(255,255,255,.052), rgba(255,255,255,.018));
+    border-color:rgba(255,255,255,.105);
+  }
+  .chip {
+    background:#101115;
+    border-color:rgba(255,255,255,.12);
+  }
+  .rarity-accent .chip:first-child {
+    color:#050506;
+    font-weight:900;
+    border-color:rgba(255,255,255,.20);
+    background:linear-gradient(135deg, var(--rarity), var(--rarity2));
+  }
+  thead th {
+    background:#111216;
+    color:#d9dee7;
+    border-bottom-color:rgba(255,255,255,.10);
+  }
+  tbody tr {
+    background:#0f1014;
+  }
+  tbody tr:nth-child(even) { background:#0b0c10; }
+  tbody tr:hover {
+    background:color-mix(in srgb, var(--rarity) 11%, #101115);
+    box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--rarity) 50%, rgba(255,255,255,.06));
+  }
+  tbody tr td:first-child {
+    border-left:4px solid var(--rarity);
+  }
+  .thumb {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.065), rgba(255,255,255,.012)),
+      linear-gradient(180deg, var(--rarity-bg), rgba(5,5,6,.8));
+    border-color:color-mix(in srgb, var(--rarity) 58%, rgba(255,255,255,.12));
+  }
+  .verdict {
+    box-shadow:0 0 20px rgba(255,255,255,.08);
+  }
+  .modal-dialog {
+    border-radius:8px;
+    background:linear-gradient(180deg, #15161a, #090a0d);
+    border-color:rgba(255,255,255,.14);
+  }
+  .modal-visual {
+    border-radius:8px;
+    border-color:color-mix(in srgb, var(--rarity) 60%, rgba(255,255,255,.12));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--rarity) 15%, transparent), transparent 50%),
+      linear-gradient(180deg, #18191e, #0b0c10);
+  }
+  .pos { color:#00e676 !important; }
+  .neg { color:#ff3b5f !important; }
+  .flat { color:#c3cad5 !important; }
+  .signal-dot.up,
+  .signal-dot.low { background:#00e676; }
+  .signal-dot.down { background:#ff3b5f; }
+  .signal-dot.watch { background:#ffd400; }
+  .release-low-badge,
+  .low-gap-badge.near {
+    border-color:rgba(0,230,118,.45);
+    background:rgba(0,230,118,.12);
+    color:#9dffc7;
+  }
+  .low-gap-badge.mid {
+    border-color:rgba(255,212,0,.48);
+    background:rgba(255,212,0,.12);
+    color:#ffe56b;
+  }
+
+  /* Product polish pass: softer hierarchy, lighter accents, large-list containment. */
+  :root {
+    --bg:#0b0d12;
+    --panel:#151820;
+    --panel-2:#1b202a;
+    --panel-3:#242a35;
+    --line:rgba(229,236,247,.13);
+    --line-soft:rgba(229,236,247,.075);
+    --text:#f5f7fb;
+    --muted:#b3bbc8;
+    --faint:#7f8795;
+    --blue:#6aa8ff;
+    --green:#5ee6a8;
+    --yellow:#ffd86b;
+    --red:#ff6b83;
+    --shadow:0 22px 58px rgba(0,0,0,.34);
+  }
+  body {
+    background:
+      radial-gradient(circle at 15% -8%, rgba(106,168,255,.14), transparent 35%),
+      radial-gradient(circle at 88% 0%, rgba(255,122,217,.095), transparent 32%),
+      linear-gradient(180deg, #171a22 0, #10131a 270px, #0b0d12 100%);
+  }
+  .app { width:min(1860px, calc(100vw - 32px)); }
+  .topbar,
+  .panel,
+  .filter-panel {
+    border-radius:18px;
+  }
+  .topbar {
+    background:
+      linear-gradient(135deg, rgba(32,36,47,.92), rgba(17,20,28,.96) 62%, rgba(24,24,32,.94)),
+      linear-gradient(90deg, rgba(106,168,255,.12), rgba(94,230,168,.06), rgba(255,122,217,.08));
+    border-color:rgba(229,236,247,.14);
+    box-shadow:0 28px 70px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .topbar::before {
+    height:2px;
+    opacity:.72;
+    background:linear-gradient(90deg, rgba(106,168,255,.85), rgba(120,240,255,.75), rgba(167,139,250,.70), rgba(255,122,217,.70), rgba(251,191,36,.72));
+  }
+  .stats { gap:10px; }
+  .topbar-side {
+    display:grid;
+    grid-template-columns:auto 1fr;
+    gap:12px;
+    align-items:stretch;
+    min-width:760px;
+  }
+  .inventory-banner-btn {
+    display:flex;
+    align-items:center;
+    gap:10px;
+    min-width:150px;
+    min-height:62px;
+    padding:10px 12px;
+    text-align:left;
+    border-radius:15px;
+    background:
+      linear-gradient(180deg, rgba(94,230,168,.13), rgba(255,255,255,.035)),
+      rgba(255,255,255,.035);
+    border-color:rgba(94,230,168,.22);
+  }
+  .inventory-banner-btn b,
+  .inventory-banner-btn small {
+    display:block;
+    line-height:1.15;
+  }
+  .inventory-banner-btn b { color:#fff; font-size:13px; font-weight:950; }
+  .inventory-banner-btn small { margin-top:4px; color:#aeb7c6; font-size:11px; font-weight:800; }
+  .inventory-banner-icon {
+    position:relative;
+    width:28px;
+    height:28px;
+    flex:0 0 auto;
+    border:1px solid rgba(94,230,168,.38);
+    border-radius:9px;
+    background:linear-gradient(135deg, rgba(94,230,168,.22), rgba(106,168,255,.12));
+  }
+  .inventory-banner-icon::before,
+  .inventory-banner-icon::after {
+    content:"";
+    position:absolute;
+    inset:7px;
+    border:2px solid #dfffee;
+    border-top:0;
+    border-radius:2px 2px 5px 5px;
+  }
+  .inventory-banner-icon::after {
+    inset:4px 8px auto;
+    height:7px;
+    border:2px solid #dfffee;
+    border-bottom:0;
+    border-radius:999px 999px 0 0;
+    background:transparent;
+  }
+  .stat,
+  .filters,
+  .panel,
+  .modal-dialog {
+    backdrop-filter:blur(16px);
+  }
+  .stat {
+    border-radius:14px;
+    background:linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.025));
+  }
+  .filters {
+    top:8px;
+    padding:12px;
+    border-radius:16px;
+    background:rgba(16,19,27,.84);
+    box-shadow:0 18px 48px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.055);
+  }
+  input,
+  select,
+  button,
+  .mini-btn,
+  .action {
+    border-radius:11px;
+  }
+  input,
+  select {
+    background:linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.032));
+    border-color:rgba(229,236,247,.13);
+  }
+  select option,
+  select optgroup {
+    color:#f5f7fb;
+    background:#171b24;
+  }
+  button,
+  .mini-btn,
+  .action {
+    background:linear-gradient(180deg, rgba(255,255,255,.095), rgba(255,255,255,.04));
+    border-color:rgba(229,236,247,.14);
+    transition:transform .16s ease, border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+  }
+  button:hover,
+  a.action:hover {
+    transform:translateY(-1px);
+    background:linear-gradient(180deg, rgba(255,255,255,.13), rgba(255,255,255,.055));
+    border-color:rgba(120,196,255,.36);
+    box-shadow:0 10px 24px rgba(0,0,0,.18);
+  }
+  .panel {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.058), rgba(255,255,255,.012) 150px),
+      linear-gradient(180deg, rgba(23,27,36,.96), rgba(12,14,20,.98));
+    border-color:rgba(229,236,247,.12);
+  }
+  .panel-head {
+    padding:16px 18px;
+    background:linear-gradient(180deg, rgba(255,255,255,.052), rgba(255,255,255,.018));
+  }
+  .panel-title { font-size:17px; letter-spacing:0; }
+  .view-toggle,
+  .grid-controls,
+  .inventory-grid-controls {
+    border-radius:13px;
+    background:rgba(255,255,255,.045);
+  }
+  .view-btn { border-radius:10px; }
+  .view-btn.active {
+    background:linear-gradient(135deg, rgba(106,168,255,.24), rgba(120,240,255,.10));
+    box-shadow:inset 0 0 0 1px rgba(122,184,255,.24);
+  }
+  .grid-card,
+  .inventory-card,
+  .focus-card,
+  tbody tr {
+    content-visibility:auto;
+  }
+  .grid-card { contain-intrinsic-size:258px; }
+  .inventory-card { contain-intrinsic-size:352px; }
+  .focus-card { contain-intrinsic-size:96px; }
+  tbody tr { contain-intrinsic-size:210px; }
+  .grid-card,
+  .inventory-card {
+    border-radius:16px;
+    border-color:color-mix(in srgb, var(--rarity) 28%, rgba(229,236,247,.12));
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--rarity) 8%, transparent), transparent 48%),
+      linear-gradient(180deg, rgba(32,36,47,.94), rgba(14,16,22,.98) 82%);
+    box-shadow:0 18px 42px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.055);
+  }
+  .grid-card::after,
+  .inventory-card::before {
+    height:3px;
+    opacity:.78;
+    box-shadow:none;
+  }
+  .grid-card:hover,
+  .grid-card:focus-visible,
+  .inventory-card:hover {
+    transform:translateY(-3px);
+    border-color:color-mix(in srgb, var(--rarity) 52%, rgba(255,255,255,.12));
+    box-shadow:0 24px 56px rgba(0,0,0,.34), 0 0 0 1px rgba(255,255,255,.035), 0 0 18px var(--rarity-bg);
+  }
+  .grid-image,
+  .inventory-card-art,
+  .thumb,
+  .modal-visual {
+    background:
+      radial-gradient(circle at 50% 26%, color-mix(in srgb, var(--rarity) 18%, transparent), transparent 55%),
+      linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.018));
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.052);
+  }
+  .grid-tier,
+  .grid-variant,
+  .rarity-accent .chip:first-child {
+    color:#10131a;
+    background:linear-gradient(135deg, color-mix(in srgb, var(--rarity) 88%, white 12%), color-mix(in srgb, var(--rarity2) 82%, white 18%));
+    box-shadow:none;
+  }
+  .grid-kpis { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .grid-kpi {
+    border-radius:10px;
+    background:rgba(255,255,255,.047);
+    border-color:rgba(229,236,247,.095);
+  }
+  .grid-market-counter {
+    display:flex;
+    min-width:0;
+  }
+  .market-count {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    max-width:100%;
+    min-height:24px;
+    padding:4px 8px;
+    border:1px solid rgba(229,236,247,.115);
+    border-radius:999px;
+    background:linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.025));
+    color:#e8eef8;
+    font-size:11px;
+    font-weight:850;
+    line-height:1.1;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    font-variant-numeric:tabular-nums;
+  }
+  .market-count b {
+    color:inherit;
+    font:inherit;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .market-count small {
+    color:var(--muted);
+    font-size:10px;
+    font-weight:750;
+  }
+  .market-count.mini {
+    padding:4px 7px;
+    font-size:10.5px;
+  }
+  .market-count.muted { color:#929baa; }
+  .market-count-dot {
+    width:7px;
+    height:7px;
+    flex:0 0 auto;
+    border-radius:999px;
+    background:linear-gradient(135deg, var(--green), var(--blue));
+    box-shadow:0 0 0 3px rgba(94,230,168,.10);
+  }
+  .price-compare {
+    display:grid;
+    grid-template-columns:repeat(2, minmax(0,1fr));
+    gap:7px;
+    margin-top:11px;
+  }
+  .market-price-card {
+    display:block;
+    min-width:0;
+    padding:8px;
+    border:1px solid rgba(229,236,247,.11);
+    border-radius:12px;
+    background:linear-gradient(180deg, rgba(255,255,255,.072), rgba(255,255,255,.028));
+    font-variant-numeric:tabular-nums;
+  }
+  .market-price-card span {
+    display:block;
+    margin-bottom:4px;
+    color:#aeb7c6;
+    font-size:10px;
+    font-weight:900;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .market-price-card b {
+    display:block;
+    color:#fff;
+    font-size:14px;
+    line-height:1.1;
+    font-weight:950;
+  }
+  .market-price-card small {
+    display:block;
+    margin-top:4px;
+    color:#aeb7c6;
+    font-size:10px;
+    line-height:1.25;
+  }
+  .market-price-card em {
+    display:block;
+    margin-top:2px;
+    font-style:normal;
+    font-weight:900;
+  }
+  .market-price-card.skins {
+    border-color:rgba(80,143,255,.22);
+    background:
+      linear-gradient(180deg, rgba(59,130,246,.105), rgba(255,255,255,.026)),
+      rgba(255,255,255,.028);
+  }
+  .market-price-card.skins.unavailable b { color:#c5cedb; }
+  .store-offers {
+    grid-column:1 / -1;
+    display:grid;
+    grid-template-columns:repeat(2, minmax(0,1fr));
+    gap:6px;
+  }
+  .store-chip {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    min-width:0;
+    min-height:28px;
+    padding:5px 7px;
+    border:1px solid rgba(229,236,247,.12);
+    border-radius:9px;
+    background:rgba(255,255,255,.045);
+    color:#edf4ff;
+    font-size:11px;
+    font-weight:950;
+    font-variant-numeric:tabular-nums;
+  }
+  .store-chip.unavailable {
+    color:#8792a3;
+    background:rgba(255,255,255,.025);
+  }
+  .store-icon {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:21px;
+    height:21px;
+    border-radius:7px;
+    color:#071018;
+    font-size:9px;
+    font-weight:1000;
+    letter-spacing:0;
+  }
+  .store-chip.csfloat .store-icon { background:linear-gradient(135deg,#44e2ff,#3b82f6); }
+  .store-chip.uuskins .store-icon { background:linear-gradient(135deg,#f8d24a,#ff8a00); }
+  .store-chip b { margin-left:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .skins-action {
+    color:#d8e8ff;
+    border-color:rgba(80,143,255,.36);
+    background:linear-gradient(180deg, rgba(80,143,255,.15), rgba(255,255,255,.035));
+  }
+  .steam-action {
+    color:#d8ffe9;
+    border-color:rgba(52,211,153,.34);
+    background:linear-gradient(180deg, rgba(52,211,153,.13), rgba(255,255,255,.032));
+  }
+  .inventory-inline-note {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    padding:12px;
+    border:1px solid rgba(229,236,247,.10);
+    border-radius:14px;
+    background:rgba(255,255,255,.035);
+  }
+  .inventory-drawer {
+    place-items:start end;
+    padding:18px;
+  }
+  .inventory-drawer-dialog {
+    position:relative;
+    display:grid;
+    grid-template-rows:auto auto auto minmax(0,1fr);
+    gap:12px;
+    width:min(1380px, calc(100vw - 36px));
+    height:min(900px, calc(100vh - 36px));
+    padding:16px;
+    border:1px solid rgba(229,236,247,.14);
+    border-radius:20px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.025)),
+      linear-gradient(180deg, #171b24, #0d1017);
+    box-shadow:0 28px 80px rgba(0,0,0,.46);
+    overflow:hidden;
+  }
+  .inventory-drawer-head {
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:14px;
+    padding:2px 52px 2px 2px;
+  }
+  .inventory-drawer-head h2 {
+    margin:0;
+    color:#fff;
+    font-size:22px;
+    line-height:1.1;
+    font-weight:950;
+  }
+  .inventory-drawer-head p {
+    margin:5px 0 0;
+    color:var(--muted);
+    font-size:12px;
+  }
+  .inventory-drawer-close {
+    top:14px;
+    right:14px;
+  }
+  .inventory-drawer .inventory-grid-view,
+  .inventory-drawer .inventory-list-wrap {
+    min-height:0;
+    overflow:auto;
+  }
+  .inventory-drawer .inventory-grid-view {
+    padding:2px 2px 10px;
+  }
+  .market-activity-row b { min-width:0; }
+  .modal-market-count { margin:-2px 0 10px; }
+  tbody tr {
+    background:rgba(20,24,32,.88);
+  }
+  tbody tr:nth-child(even) { background:rgba(16,19,26,.90); }
+  tbody tr:hover {
+    background:color-mix(in srgb, var(--rarity) 5%, rgba(28,32,42,.94));
+    box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--rarity) 24%, rgba(255,255,255,.05));
+  }
+  tbody tr td:first-child {
+    border-left:3px solid color-mix(in srgb, var(--rarity) 78%, white 4%);
+  }
+  .portfolio-focus-grid {
+    grid-template-columns:repeat(2, minmax(0,1fr));
+    gap:14px;
+    padding:16px;
+  }
+  .recommendation-group {
+    min-width:0;
+    border:1px solid color-mix(in srgb, var(--rarity) 26%, rgba(229,236,247,.115));
+    border-radius:16px;
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--rarity) 7%, transparent), transparent 50%),
+      rgba(255,255,255,.032);
+    overflow:hidden;
+  }
+  .recommendation-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:11px 12px;
+    border-bottom:1px solid rgba(229,236,247,.075);
+  }
+  .recommendation-head span {
+    color:#fff;
+    font-size:13px;
+    font-weight:950;
+  }
+  .recommendation-head b {
+    color:color-mix(in srgb, var(--rarity) 72%, white 28%);
+    font-size:11px;
+    font-weight:900;
+    text-transform:uppercase;
+  }
+  .recommendation-cards {
+    display:grid;
+    grid-template-columns:1fr;
+    gap:8px;
+    padding:10px;
+  }
+  .focus-card {
+    width:100%;
+    min-height:86px;
+    grid-template-columns:66px minmax(0,1fr);
+    padding:9px;
+    border-radius:14px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.022)),
+      linear-gradient(135deg, color-mix(in srgb, var(--rarity) 6%, transparent), transparent 68%);
+    color:var(--text);
+    text-align:left;
+    cursor:pointer;
+    box-shadow:none;
+    transition:transform .16s ease, border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+  }
+  .focus-card:hover,
+  .focus-card:focus-visible {
+    transform:translateY(-1px);
+    border-color:color-mix(in srgb, var(--rarity) 46%, rgba(255,255,255,.14));
+    box-shadow:0 12px 28px rgba(0,0,0,.20);
+    outline:none;
+  }
+  .focus-card img {
+    width:66px;
+    height:66px;
+    border-radius:12px;
+    background:rgba(255,255,255,.035);
+  }
+  .focus-card-body {
+    display:block;
+    min-width:0;
+  }
+  .focus-note {
+    display:block;
+    color:#aeb7c6;
+  }
+  .focus-meta {
+    align-items:center;
+  }
+  .focus-chip {
+    border-radius:999px;
+    background:rgba(255,255,255,.05);
+    border-color:rgba(229,236,247,.11);
+  }
+  .focus-empty.small {
+    padding:14px;
+    font-size:12px;
+  }
+  .verdict {
+    box-shadow:none;
+  }
+  /* Consistency pass: solid canvas, calmer surfaces, semantic accents only. */
+  body {
+    background:#0d1118;
+  }
+  .topbar,
+  .panel,
+  .filter-panel,
+  .inventory-drawer-dialog,
+  .modal-dialog {
+    background:#151a23;
+    border-color:#293142;
+    box-shadow:0 18px 48px rgba(0,0,0,.30);
+  }
+  .topbar::before { display:none; }
+  .filters,
+  .panel-head,
+  .stat,
+  .inventory-inline-note,
+  .recommendation-group,
+  .focus-card,
+  .market-price-card,
+  .grid-card,
+  .inventory-card,
+  tbody tr,
+  tbody tr:nth-child(even) {
+    background:#171d27;
+  }
+  .filters {
+    grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .filters .field:first-child {
+    grid-column:span 2;
+  }
+  tbody tr:hover {
+    background:#1b2330;
+    box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--rarity) 24%, #364155);
+  }
+  input,
+  select,
+  button,
+  .mini-btn,
+  .action,
+  .view-toggle,
+  .grid-controls,
+  .inventory-grid-controls {
+    background:#202837;
+    border-color:#384355;
+    box-shadow:none;
+  }
+  input:focus,
+  select:focus,
+  .multi-select-button:focus-visible,
+  button:focus-visible {
+    outline:2px solid rgba(94,156,255,.34);
+    outline-offset:2px;
+  }
+  button:hover,
+  a.action:hover,
+  .mini-btn:hover {
+    transform:translateY(-1px);
+    background:#263044;
+    border-color:#4b5d78;
+    box-shadow:0 10px 24px rgba(0,0,0,.18);
+  }
+  select option,
+  select optgroup {
+    background:#202837;
+    color:#f5f7fb;
+  }
+  .multi-select {
+    position:relative;
+    min-width:0;
+  }
+  .multi-select-button {
+    width:100%;
+    min-height:36px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:8px 10px;
+    color:var(--text);
+    font-weight:800;
+    text-align:left;
+  }
+  .multi-select-button::after {
+    content:"";
+    width:8px;
+    height:8px;
+    border-right:2px solid #aeb7c6;
+    border-bottom:2px solid #aeb7c6;
+    transform:rotate(45deg) translateY(-2px);
+    transition:transform .16s ease;
+  }
+  .multi-select[data-open="true"] .multi-select-button::after {
+    transform:rotate(225deg) translateY(-2px);
+  }
+  .multi-select-menu {
+    position:absolute;
+    top:calc(100% + 6px);
+    left:0;
+    z-index:80;
+    width:min(260px, 92vw);
+    display:none;
+    gap:4px;
+    padding:8px;
+    border:1px solid #384355;
+    border-radius:12px;
+    background:#202837;
+    box-shadow:0 18px 42px rgba(0,0,0,.34);
+  }
+  .multi-select[data-open="true"] .multi-select-menu {
+    display:grid;
+  }
+  .multi-select-menu label {
+    display:flex;
+    align-items:center;
+    gap:9px;
+    min-height:34px;
+    padding:7px 8px;
+    margin:0;
+    color:#e6edf8;
+    border-radius:9px;
+    cursor:pointer;
+    font-size:13px;
+    font-weight:800;
+  }
+  .multi-select-menu label:hover {
+    background:#283244;
+  }
+  .multi-select-menu input {
+    width:16px;
+    height:16px;
+    min-height:0;
+    accent-color:#6aa8ff;
+  }
+  .metric-label,
+  .metric-row span[title],
+  .inventory-stat span[title],
+  .market-price-card[title],
+  .price-range-row[title] {
+    cursor:help;
+    text-decoration:underline dotted rgba(174,183,198,.45);
+    text-underline-offset:3px;
+  }
+  .price-opportunity-tag {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    width:100%;
+    margin-top:8px;
+    padding:7px 8px;
+    border:1px solid rgba(94,230,168,.32);
+    border-radius:11px;
+    background:#172820;
+    color:#c8ffe5;
+    font-size:11px;
+    font-weight:900;
+    line-height:1.2;
+  }
+  .price-opportunity-tag::before {
+    content:"";
+    width:8px;
+    height:8px;
+    border-radius:999px;
+    background:#5ee6a8;
+    box-shadow:0 0 0 3px rgba(94,230,168,.12);
+  }
+  .third-party-row td:first-child {
+    border-left-color:#5ee6a8;
+  }
+  .grid-deal-tag {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-height:22px;
+    padding:3px 7px;
+    border:1px solid rgba(94,230,168,.30);
+    border-radius:999px;
+    background:#172820;
+    color:#c8ffe5;
+    font-size:10px;
+    font-weight:950;
+    white-space:nowrap;
+  }
+  .grid-prices {
+    display:grid;
+    grid-template-columns:repeat(5, minmax(0,1fr));
+    gap:4px;
+    min-width:0;
+  }
+  .grid-prices span {
+    min-width:0;
+    padding:4px 5px;
+    border:1px solid #303a4d;
+    border-radius:8px;
+    background:#141b27;
+    overflow:hidden;
+  }
+  .grid-prices small,
+  .grid-prices b {
+    display:block;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-variant-numeric:tabular-nums;
+  }
+  .grid-prices small {
+    color:#8f9aab;
+    font-size:8px;
+    font-weight:950;
+    text-transform:uppercase;
+  }
+  .grid-prices b {
+    margin-top:1px;
+    color:#f5f7fb;
+    font-size:10px;
+    font-weight:950;
+  }
+  .grid-view[data-density="dense"] .grid-prices {
+    grid-template-columns:repeat(3, minmax(0,1fr));
+  }
+  .grid-view[data-density="dense"] .grid-prices span {
+    padding:3px 4px;
+  }
+  .grid-view[data-density="dense"] .grid-prices span:nth-child(3),
+  .grid-view[data-density="dense"] .grid-prices span:nth-child(5) {
+    display:none;
+  }
+  .grid-view[data-density="ultra"] .grid-prices {
+    grid-template-columns:repeat(2, minmax(0,1fr));
+  }
+  .grid-view[data-density="ultra"] .grid-prices span {
+    padding:2px 3px;
+    border-radius:6px;
+  }
+  .grid-view[data-density="ultra"] .grid-prices span:nth-child(n+3),
+  .grid-view[data-density="ultra"] .grid-market-counter,
+  .grid-view[data-density="ultra"] .grid-deal-tag {
+    display:none;
+  }
+  .favorite-btn {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    min-height:30px;
+    padding:5px 9px;
+    border-radius:999px;
+    color:#cbd5e1;
+    font-size:12px;
+    font-weight:900;
+  }
+  .favorite-btn.active {
+    color:#ffe7a3;
+    border-color:rgba(255,216,107,.42);
+    background:#2a2516;
+  }
+  .favorite-btn.compact {
+    position:absolute;
+    top:8px;
+    left:50%;
+    z-index:4;
+    min-width:30px;
+    width:30px;
+    height:30px;
+    padding:0;
+    font-size:16px;
+    background:#202837;
+  }
+  .refresh-prices-btn,
+  .fetch-price-btn {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    min-height:30px;
+    padding:6px 10px;
+    border:1px solid rgba(57,217,138,.36);
+    border-radius:999px;
+    background:linear-gradient(180deg, rgba(57,217,138,.18), rgba(10,18,28,.92));
+    color:#d8ffe9;
+    font-size:12px;
+    font-weight:950;
+    box-shadow:0 8px 18px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .refresh-prices-btn:hover,
+  .fetch-price-btn:hover {
+    border-color:rgba(52,235,161,.72);
+    background:linear-gradient(180deg, rgba(57,217,138,.28), rgba(12,24,34,.96));
+  }
+  .fetch-price-btn:disabled {
+    cursor:not-allowed;
+    opacity:.45;
+    color:#9aa8b9;
+    border-color:rgba(169,180,196,.18);
+    background:#151b25;
+  }
+  .fetch-price-btn.compact {
+    width:100%;
+    min-height:23px;
+    padding:3px 6px;
+    border-radius:7px;
+    font-size:10px;
+    letter-spacing:.01em;
+  }
+  .price-fetch-status {
+    display:inline-flex;
+    align-items:center;
+    min-height:24px;
+    margin-left:10px;
+    padding:4px 9px;
+    border:1px solid rgba(169,180,196,.16);
+    border-radius:999px;
+    background:rgba(255,255,255,.04);
+    color:#aebbd0;
+    font-weight:850;
+  }
+  .price-fetch-inline-status {
+    min-height:28px;
+    margin:6px 0 0;
+    width:100%;
+    justify-content:center;
+    white-space:normal;
+    text-align:center;
+    line-height:1.25;
+  }
+  .price-fetching .refresh-prices-btn,
+  .price-fetching .fetch-price-btn {
+    cursor:progress;
+    opacity:.72;
+  }
+  .refresh-prices-btn[disabled],
+  .fetch-price-btn.busy {
+    pointer-events:none;
+  }
+  .price-fetch-toast {
+    position:fixed;
+    right:18px;
+    bottom:18px;
+    z-index:95;
+    max-width:min(460px, calc(100vw - 28px));
+    margin:0;
+    box-shadow:0 18px 46px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.06);
+    pointer-events:none;
+    opacity:0;
+    transform:translateY(10px);
+    transition:opacity .16s ease, transform .16s ease;
+  }
+  .price-fetch-toast[data-visible="true"] {
+    opacity:1;
+    transform:translateY(0);
+  }
+  .footer-note {
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:8px;
+  }
+  .price-fetch-status[data-tone="ok"] {
+    color:#baffdf;
+    border-color:rgba(52,235,161,.34);
+    background:rgba(18,111,72,.18);
+  }
+  .price-fetch-status[data-tone="warn"] {
+    color:#ffe7a3;
+    border-color:rgba(255,201,71,.34);
+    background:rgba(134,89,8,.18);
+  }
+  .price-fetch-status[data-tone="error"] {
+    color:#ffc4cf;
+    border-color:rgba(255,91,122,.38);
+    background:rgba(112,24,44,.20);
+  }
+  .price-fetch-status[data-tone="busy"]::before {
+    content:"";
+    width:7px;
+    height:7px;
+    margin-right:7px;
+    border-radius:999px;
+    background:#39d98a;
+    box-shadow:0 0 0 0 rgba(57,217,138,.45);
+    animation:fetchPulse 1.15s ease-out infinite;
+  }
+  @keyframes fetchPulse {
+    0% { box-shadow:0 0 0 0 rgba(57,217,138,.42); }
+    100% { box-shadow:0 0 0 9px rgba(57,217,138,0); }
+  }
+  .signal-tags {
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    gap:4px;
+  }
+  .signal-tags.row {
+    margin-top:8px;
+    width:max-content;
+    max-width:96px;
+  }
+  .signal-tags.grid {
+    position:absolute;
+    top:44px;
+    left:8px;
+    z-index:3;
+    max-width:74px;
+  }
+  .signal-tag {
+    display:inline-flex;
+    align-items:center;
+    max-width:100%;
+    min-height:20px;
+    padding:3px 7px;
+    border:0;
+    border-radius:999px;
+    background:#252d3b;
+    color:#f4f8ff;
+    font-size:9.5px;
+    line-height:1.1;
+    font-weight:950;
+    text-transform:uppercase;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    box-shadow:0 10px 20px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.18);
+  }
+  .signal-tag.edge {
+    color:#04130d;
+    background:linear-gradient(135deg, #40f6a0, #22d3ee);
+  }
+  .signal-tag.low {
+    color:#061424;
+    background:linear-gradient(135deg, #8bd3ff, #5b8cff);
+  }
+  .signal-tag.discount {
+    color:#211402;
+    background:linear-gradient(135deg, #ffe66d, #ff9f1c);
+  }
+  .signal-tag.watch {
+    color:#14091f;
+    background:linear-gradient(135deg, #c4b5fd, #fb7bdc);
+  }
+  .signal-tag.favorite {
+    color:#211402;
+    background:linear-gradient(135deg, #fff176, #ffbf3f);
+  }
+  .inventory-drawer {
+    place-items:center;
+    z-index:2100;
+  }
+  #detailModal { z-index:2200; }
+  .grid-image,
+  .inventory-card-art,
+  .thumb,
+  .modal-visual {
+    background:#1d2532;
+  }
+  .market-price-card.skins {
+    background:#182338;
+  }
+  .market-price-card.skins.deal {
+    border-color:rgba(94,230,168,.34);
+    background:#172820;
+  }
+  .market-price-card.true-edge.deal {
+    border-color:rgba(94,230,168,.38);
+    background:#172820;
+  }
+  .market-price-card.skins.expensive {
+    border-color:rgba(255,107,131,.28);
+    background:#2a1d24;
+  }
+  .market-price-card.true-edge.expensive {
+    border-color:rgba(255,107,131,.28);
+    background:#2a1d24;
+  }
+  @media (prefers-reduced-motion:no-preference) {
+    tbody tr { animation:none; }
+    .signal-dot.up,
+    .signal-dot.low { animation:none; }
+    .release-low-badge {
+      transition:border-color .18s ease, background-color .18s ease, transform .18s ease;
+    }
+    .release-low-badge:hover { transform:translateY(-1px); }
+  }
+
+  @media (max-width:1200px) {
     .topbar { grid-template-columns:1fr; }
+    .topbar-side { min-width:0; grid-template-columns:1fr; }
     .stats { min-width:0; grid-template-columns:repeat(5, minmax(110px,1fr)); }
     .filters { grid-template-columns:repeat(4, minmax(150px,1fr)); }
     .chart-grid { grid-template-columns:1fr; }
@@ -1642,6 +3927,8 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     h1 { font-size:20px; }
     .sub { font-size:12px; }
     .stats { grid-template-columns:1fr 1fr; gap:6px; min-width:0; margin-top:12px; }
+    .topbar-side { display:grid; grid-template-columns:1fr; gap:8px; margin-top:12px; }
+    .inventory-banner-btn { min-height:52px; width:100%; }
     .stat { padding:8px 9px; }
     .stat span { font-size:11px; }
     .stat b { font-size:17px; }
@@ -1694,6 +3981,70 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     .grid-controls { flex-wrap:wrap; }
     .grid-controls select { flex:1; min-width:112px; }
     .grid-controls input { flex:1; min-width:96px; }
+    .portfolio-focus-grid { grid-template-columns:1fr; gap:8px; padding:10px; }
+    .focus-card { grid-template-columns:64px minmax(0,1fr); padding:9px; }
+    .focus-card img { width:64px; height:64px; }
+    .inventory-summary { display:block; }
+    .inventory-summary-stats { justify-content:flex-start; margin-top:10px; }
+    .inventory-stat { min-width:calc(50% - 4px); }
+    .inventory-body { padding:10px; gap:10px; }
+    .inventory-form { grid-template-columns:1fr 1fr; gap:8px; }
+    .inventory-rate-note { font-size:11px; }
+    .inventory-form .field:first-child,
+    .inventory-form .field.notes-field,
+    .inventory-form-actions { grid-column:1 / -1; }
+    .inventory-form-actions { display:grid; grid-template-columns:1fr 1fr; }
+    .inventory-toolbar { display:grid; gap:8px; }
+    .inventory-toolbar-left { display:grid; grid-template-columns:1fr; }
+    .inventory-toolbar-right { justify-content:stretch; }
+    .inventory-toolbar-right > *,
+    .inventory-grid-controls { width:100%; }
+    .inventory-grid-controls select { flex:1; min-width:0; }
+    .inventory-grid-controls input { flex:0 0 86px; }
+    .inventory-filter-input,
+    .inventory-account-filter,
+    .inventory-sort-filter { width:100%; }
+    .inventory-context-panel { grid-template-columns:1fr 1fr; }
+    .inventory-drawer-stats { grid-template-columns:1fr 1fr; }
+    .inventory-ops { grid-template-columns:1fr; }
+    .inventory-op-grid,
+    .inventory-op-grid.three { grid-template-columns:1fr 1fr; }
+    .inventory-op textarea { min-height:132px; }
+    .inventory-selection-bar { display:grid; gap:8px; }
+    .inventory-selection-actions { display:grid; grid-template-columns:1fr 1fr; }
+    .inventory-selection-actions .mini-btn { width:100%; }
+    .inventory-list-wrap { overflow:visible; border:0; }
+    .inventory-table { min-width:0; display:block; }
+    .inventory-table thead { display:none; }
+    .inventory-table tbody { display:grid; gap:10px; }
+    .inventory-table tr { display:block; border:1px solid rgba(169,180,196,.16); border-radius:9px; background:#101722; overflow:hidden; }
+    .inventory-table td { display:block; width:100%; padding:10px 12px; border-bottom:1px solid rgba(152,166,184,.12); }
+    .inventory-table td:last-child { border-bottom:0; }
+    .inventory-select-cell { text-align:left; }
+    .inventory-table td::before {
+      content:attr(data-label);
+      display:block;
+      margin-bottom:5px;
+      color:var(--muted);
+      font-size:10px;
+      font-weight:900;
+      text-transform:uppercase;
+    }
+    .inventory-grid-view { grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; }
+    .inventory-drawer { padding:8px; }
+    .inventory-drawer-dialog { width:calc(100vw - 16px); height:calc(100vh - 16px); padding:10px; border-radius:14px; }
+    .inventory-drawer-head { padding-right:52px; }
+    .inventory-drawer-head h2 { font-size:18px; }
+    .inventory-drawer-head p { font-size:11px; }
+    .inventory-card { min-height:336px; padding:8px; border-radius:10px; }
+    .inventory-card-art { min-height:132px; padding:7px 5px 5px; }
+    .inventory-card-title { font-size:11px; }
+    .inventory-card-meta { font-size:10px; }
+    .inventory-card-subrow { font-size:9.5px; }
+    .inventory-current-price { font-size:14px; }
+    .inventory-card-actions { display:flex; }
+    .inventory-card-actions .mini-btn { min-height:24px; padding:3px 5px; font-size:9px; }
+    .inventory-card-select { width:26px; height:26px; }
     .table-wrap { max-height:none; overflow:visible; }
     .grid-view { gap:8px; padding:10px; }
     .grid-card { min-height:232px; padding:8px; }
@@ -1796,12 +4147,18 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
       <h1>CS2 Sticker Decision Dashboard</h1>
       <p class="sub">Analyzer output with Paper, Foil, Holo and Gold coverage. Use filters to isolate variants, sticker type, confidence and near-low price setups before judging quality and demand.</p>
     </div>
-    <div class="stats">
-      <div class="stat"><span>Shown</span><b id="visibleCount">0</b></div>
-      <div class="stat"><span>Total</span><b id="totalCount">0</b></div>
-      <div class="stat"><span>Avg Expected</span><b id="avgExpected">0%</b></div>
-      <div class="stat"><span>Avg Edge</span><b id="avgEdge">0.00</b></div>
-      <div class="stat"><span>Scored</span><b id="scoredCount">0</b></div>
+    <div class="topbar-side">
+      <button class="inventory-banner-btn" id="inventoryDrawerBtn" type="button" aria-haspopup="dialog" aria-controls="inventoryDrawer">
+        <span class="inventory-banner-icon" aria-hidden="true"></span>
+        <span><b>Inventory</b><small id="inventoryTopCount">0 items</small></span>
+      </button>
+      <div class="stats">
+        <div class="stat"><span>Shown</span><b id="visibleCount">0</b></div>
+        <div class="stat"><span>Total</span><b id="totalCount">0</b></div>
+        <div class="stat"><span>Avg Expected</span><b id="avgExpected">0%</b></div>
+        <div class="stat"><span>Avg Edge</span><b id="avgEdge">0.00</b></div>
+        <div class="stat"><span>Scored</span><b id="scoredCount">0</b></div>
+      </div>
     </div>
   </header>
 
@@ -1813,7 +4170,18 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     <section class="filters" aria-label="Dashboard filters">
       <div class="field"><label for="search">Search</label><input id="search" placeholder="Sticker, team, player, verdict, notes, price" /></div>
       <div class="field"><label for="verdictFilter">Decision</label><select id="verdictFilter"><option value="">All decisions</option></select></div>
-      <div class="field"><label for="variantFilter">Variant</label><select id="variantFilter"><option value="">All variants</option></select></div>
+      <div class="field variant-field">
+        <label id="variantFilterLabel" for="variantFilterButton">Variant</label>
+        <div class="multi-select" id="variantFilter" data-open="false">
+          <button id="variantFilterButton" class="multi-select-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="variantFilterLabel variantFilterButton">Holo, Foil</button>
+          <div class="multi-select-menu" id="variantFilterMenu" role="listbox" aria-label="Variant filter">
+            <label><input type="checkbox" data-variant-option value="Paper" />Paper</label>
+            <label><input type="checkbox" data-variant-option value="Foil" checked />Foil</label>
+            <label><input type="checkbox" data-variant-option value="Holo" checked />Holo</label>
+            <label><input type="checkbox" data-variant-option value="Gold" />Gold</label>
+          </div>
+        </div>
+      </div>
       <div class="field"><label for="typeFilter">Type</label><select id="typeFilter"><option value="">All types</option></select></div>
       <div class="field"><label for="categoryFilter">Category</label><select id="categoryFilter"><option value="">All categories</option></select></div>
       <div class="field"><label for="entryFilter">Entry</label><select id="entryFilter"><option value="">All entries</option></select></div>
@@ -1821,15 +4189,106 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
       <div class="field"><label for="confidenceFilter">Confidence</label><select id="confidenceFilter"><option value="">Any</option><option value="0.35">35%+</option><option value="0.50">50%+</option><option value="0.70">70%+</option></select></div>
       <div class="field"><label for="priceMax">Max tokens</label><input id="priceMax" type="number" min="0" step="1" placeholder="Any" /></div>
       <div class="field"><label for="priceStateFilter">Price state</label><select id="priceStateFilter"><option value="">All</option><option value="current_low">Current low</option><option value="above_low">Above low</option></select></div>
+      <div class="field"><label for="favoriteFilter">Bookmarks</label><select id="favoriteFilter"><option value="">All</option><option value="favorites">Favorites only</option><option value="not_favorites">Not favorites</option></select></div>
+      <div class="field"><label for="refreshFavoritePricesBtn">2P prices</label><button id="refreshFavoritePricesBtn" class="refresh-prices-btn" type="button">Refresh Favorites</button><div id="priceFetchInlineStatus" class="price-fetch-status price-fetch-inline-status">2P refresh idle.</div></div>
       <div class="field"><label for="lowGapMax">Within low %</label><input id="lowGapMax" type="number" min="0" step="0.5" placeholder="5 or 10" /></div>
-      <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
-      <div class="field"><label for="rowLimit">Rows</label><select id="rowLimit"><option value="80">80 fastest</option><option value="120" selected>120 balanced</option><option value="200">200</option><option value="400">400</option><option value="0">All slower</option></select></div>
+      <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="third_party_edge">2nd-party true edge</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
+      <div class="field"><label for="rowLimit">Rows</label><select id="rowLimit"><option value="0" selected>All gradual</option><option value="120">120 fastest</option><option value="240">240</option><option value="480">480</option></select></div>
       <div class="field"><label for="scoredFilter">Scored</label><select id="scoredFilter"><option value="">All</option><option value="true">Scored</option><option value="false">Unscored</option></select></div>
       <div class="field"><label>&nbsp;</label><button id="resetBtn">Reset</button></div>
     </section>
   </details>
 
   <main class="content">
+    <details class="panel recommendations-shell" id="portfolioFocusPanel" open>
+      <summary class="panel-head">
+        <div>
+          <div class="panel-title">Inventory-Aware Buy Focus by Finish</div>
+          <div class="hint">Recommendations are split into Paper, Foil, Holo and Gold so you can judge each market separately while avoiding inventory concentration.</div>
+        </div>
+        <div class="hint" id="portfolioFocusHint">Load inventory to personalize suggestions.</div>
+        <span class="collapse-cue" aria-hidden="true"></span>
+      </summary>
+      <div id="portfolioFocus" class="portfolio-focus-grid"></div>
+    </details>
+
+    <details class="panel inventory-shell" id="inventoryShell">
+      <summary class="panel-head inventory-summary">
+        <div>
+          <div class="panel-title">Inventory Tracker</div>
+          <div class="hint" id="inventorySaveHint">Serve through <code>inventory_server.py</code> to save edits into <code>Inventory/sticker_inventory.csv</code>.</div>
+        </div>
+        <div class="inventory-summary-stats">
+          <div class="inventory-stat"><span>Items</span><b id="inventoryCount">0</b></div>
+          <div class="inventory-stat"><span title="Estimated current market value of all tracked inventory items using the dashboard's latest Steam-side price.">Current</span><b id="inventoryCurrentValue">$0.00</b></div>
+          <div class="inventory-stat"><span title="The purchase cost you entered for inventory rows. Blank purchase prices are excluded from this total.">Known Cost</span><b id="inventoryKnownCost">$0.00</b></div>
+          <div class="inventory-stat"><span title="Profit or loss versus known purchase cost. It is only calculated for items with a saved buy price.">P/L</span><b id="inventoryPnl">$0.00</b></div>
+        </div>
+      </summary>
+      <div class="inventory-body">
+        <details class="inventory-op inventory-add-panel" id="inventoryAddPanel">
+          <summary>Add / Edit Item <span>Single item entry</span></summary>
+          <div class="inventory-op-body">
+            <form id="inventoryForm" class="inventory-form">
+              <input type="hidden" id="inventoryId" />
+              <div class="inventory-rate-note"><b>100 tokens = $0.99</b><span>Fill either tokens or USD; the paired value is calculated automatically.</span></div>
+              <div class="field">
+                <label for="inventoryStickerInput">Sticker</label>
+                <input id="inventoryStickerInput" list="inventoryStickerOptions" placeholder="Start typing sticker name" required />
+                <datalist id="inventoryStickerOptions"></datalist>
+              </div>
+              <div class="field"><label for="inventoryQuantity">Qty</label><input id="inventoryQuantity" type="number" min="1" step="1" value="1" /></div>
+              <div class="field"><label for="inventoryAccount">Steam account</label><input id="inventoryAccount" list="inventoryAccountOptions" placeholder="Main / Alt" /><datalist id="inventoryAccountOptions"></datalist></div>
+              <div class="field"><label for="inventoryBoughtTokens">Bought tokens</label><input id="inventoryBoughtTokens" type="number" min="0" step="1" placeholder="Optional" /></div>
+              <div class="field"><label for="inventoryBoughtUsd">Bought USD</label><input id="inventoryBoughtUsd" type="number" min="0" step="0.01" placeholder="Optional" /></div>
+              <div class="field"><label for="inventoryAcquiredAt">Date</label><input id="inventoryAcquiredAt" type="date" /></div>
+              <div class="field notes-field"><label for="inventoryNotes">Notes</label><input id="inventoryNotes" placeholder="Trade note, reason, storage" /></div>
+              <div class="inventory-form-actions">
+                <button id="inventorySubmit" type="submit">Add Item</button>
+                <button id="inventoryCancel" type="button">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </details>
+        <div class="inventory-ops">
+          <details class="inventory-op" id="inventoryBatchPanel">
+            <summary>Batch Add <span>CSV or spreadsheet rows</span></summary>
+            <div class="inventory-op-body">
+              <div class="inventory-op-grid">
+                <div class="field"><label for="inventoryBatchAccount">Default account</label><input id="inventoryBatchAccount" list="inventoryAccountOptions" placeholder="Used when row is blank" /></div>
+                <div class="field"><label for="inventoryBatchDate">Default date</label><input id="inventoryBatchDate" type="date" /></div>
+                <label class="check-row"><input id="inventoryBatchUseCurrentPrice" type="checkbox" checked />Use current market if price is blank</label>
+                <div class="inventory-op-actions"><button class="mini-btn" id="inventoryBatchAddBtn" type="button">Add Batch</button></div>
+              </div>
+              <textarea id="inventoryBatchText" placeholder="Sticker, qty, account, bought tokens, bought USD, date, notes&#10;Example: nettik (Holo), 2, Main, 119, , 2026-05-30, first buy&#10;Example: Team Liquid (Holo), 1, Alt, , 112.00, 2026-05-30, FOMO check"></textarea>
+              <div class="inventory-op-hint">Each quantity creates separate inventory rows. Exact names are best; partial names are accepted only when they match one sticker.</div>
+            </div>
+          </details>
+          <details class="inventory-op" id="inventoryBulkPanel">
+            <summary>Batch Edit Selected <span>Apply only filled fields</span></summary>
+            <div class="inventory-op-body">
+              <div class="inventory-op-grid three">
+                <div class="field"><label for="inventoryBulkAccount">Account</label><input id="inventoryBulkAccount" list="inventoryAccountOptions" placeholder="Leave blank to keep" /></div>
+                <div class="field"><label for="inventoryBulkBoughtTokens">Bought tokens</label><input id="inventoryBulkBoughtTokens" type="number" min="0" step="1" placeholder="Optional" /></div>
+                <div class="field"><label for="inventoryBulkBoughtUsd">Bought USD</label><input id="inventoryBulkBoughtUsd" type="number" min="0" step="0.01" placeholder="Optional" /></div>
+                <div class="field"><label for="inventoryBulkDate">Date</label><input id="inventoryBulkDate" type="date" /></div>
+                <div class="field"><label for="inventoryBulkNotesMode">Notes</label><select id="inventoryBulkNotesMode"><option value="append">Append notes</option><option value="replace">Replace notes</option></select></div>
+                <div class="field"><label for="inventoryBulkNotes">Note text</label><input id="inventoryBulkNotes" placeholder="Leave blank to keep" /></div>
+              </div>
+              <div class="inventory-op-actions">
+                <button class="mini-btn" id="inventoryBulkApplyBtn" type="button">Apply to Selected</button>
+                <span class="inventory-op-hint">Use selection controls below to target visible or manually checked items.</span>
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="inventory-inline-note">
+          <span class="inventory-status" id="inventoryStatus">Inventory not loaded yet.</span>
+          <button class="mini-btn" id="inventoryDrawerInlineBtn" type="button">Open Inventory Window</button>
+        </div>
+      </div>
+    </details>
+
     <section class="panel">
       <div class="panel-head">
         <div><div class="panel-title">Priority Table</div><div class="hint">Click headers to sort. Hover over trend points to inspect token price, USD value, popularity and timestamp.</div></div>
@@ -1878,10 +4337,11 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
         </table>
       </div>
       <div id="gridView" class="grid-view" aria-label="Sticker grid" hidden></div>
-      <div class="footer-note"><span id="renderHint">Rows are capped for smooth scrolling; all records remain searchable and sortable.</span> Generated files are written under <code>visualized/</code>.</div>
+      <div class="footer-note"><span id="renderHint">All matched records render in small batches so the dashboard remains responsive.</span><span id="priceFetchStatus" class="price-fetch-status">2P refresh idle.</span> Generated files are written under <code>visualized/</code>.</div>
     </section>
   </main>
   <div id="sparkTip" class="spark-tip" role="tooltip"></div>
+  <div id="priceFetchToast" class="price-fetch-status price-fetch-toast" role="status" aria-live="polite">2P refresh idle.</div>
   <div id="detailModal" class="modal" hidden>
     <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
@@ -1889,13 +4349,94 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
       <div class="modal-content" id="modalContent"></div>
     </div>
   </div>
+  <div id="inventoryDrawer" class="inventory-drawer modal" hidden>
+    <div class="modal-backdrop" data-close-inventory-drawer></div>
+    <div class="inventory-drawer-dialog" role="dialog" aria-modal="true" aria-labelledby="inventoryDrawerTitle">
+      <div class="inventory-drawer-head">
+        <div>
+          <h2 id="inventoryDrawerTitle">Inventory</h2>
+          <p>Each owned sticker is shown as a separate item, with current price, P/L, and market context.</p>
+        </div>
+        <button class="modal-close inventory-drawer-close" id="inventoryDrawerClose" type="button" aria-label="Close inventory">&times;</button>
+      </div>
+      <div class="inventory-toolbar">
+        <div class="inventory-toolbar-left">
+          <div class="view-toggle" role="group" aria-label="Inventory view mode">
+            <button class="view-btn active" id="inventoryGridBtn" type="button" aria-pressed="true"><span class="view-icon grid-icon"></span>Grid</button>
+            <button class="view-btn" id="inventoryListBtn" type="button" aria-pressed="false"><span class="view-icon list-icon"></span>List</button>
+          </div>
+          <input class="inventory-filter-input" id="inventorySearch" placeholder="Search inventory" />
+          <select class="inventory-account-filter" id="inventoryAccountFilter"><option value="">All accounts</option></select>
+          <select class="inventory-sort-filter" id="inventorySort" title="Sort inventory">
+            <option value="date_desc">Newest first</option>
+            <option value="date_asc">Oldest first</option>
+            <option value="name_asc">Sticker A-Z</option>
+            <option value="current_desc">Current value</option>
+            <option value="cost_desc">Buy price</option>
+            <option value="pnl_desc">P/L value</option>
+            <option value="pnl_pct_desc">P/L percent</option>
+            <option value="account_asc">Account</option>
+          </select>
+          <button class="mini-btn" id="inventoryClearFiltersBtn" type="button">Clear</button>
+        </div>
+        <div class="inventory-toolbar-right">
+          <div class="inventory-grid-controls" id="inventoryGridControls">
+            <label for="inventoryGridCols">Tiles</label>
+            <select id="inventoryGridCols">
+              <option value="auto">Auto</option>
+              <option value="5" selected>5 per row</option>
+              <option value="8">8 per row</option>
+              <option value="12">12 per row</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input id="inventoryCustomCols" type="number" min="1" max="18" step="1" placeholder="More" hidden />
+          </div>
+          <button class="mini-btn" id="inventoryExportBtn" type="button">Download CSV</button>
+        </div>
+      </div>
+      <div class="inventory-drawer-stats">
+        <div class="inventory-drawer-stat"><span>Visible Items</span><b id="inventoryDrawerCount">0</b></div>
+        <div class="inventory-drawer-stat"><span>Visible Current</span><b id="inventoryDrawerCurrentValue">$0.00</b></div>
+        <div class="inventory-drawer-stat"><span>Visible Cost</span><b id="inventoryDrawerKnownCost">$0.00</b></div>
+        <div class="inventory-drawer-stat"><span>Visible P/L</span><b id="inventoryDrawerPnl">$0.00</b></div>
+      </div>
+      <div class="inventory-selection-bar">
+        <div class="inventory-selected-count" id="inventorySelectedCount">0 selected</div>
+        <div class="inventory-selection-actions">
+          <button class="mini-btn" id="inventorySelectVisibleBtn" type="button">Select Visible</button>
+          <button class="mini-btn" id="inventoryClearSelectionBtn" type="button">Clear Selection</button>
+          <button class="mini-btn danger" id="inventoryDeleteSelectedBtn" type="button">Delete Selected</button>
+        </div>
+      </div>
+      <div id="inventoryGridView" class="inventory-grid-view"></div>
+      <div id="inventoryListView" class="inventory-list-wrap" hidden>
+        <table class="inventory-table">
+          <thead>
+            <tr>
+              <th class="select-col">Select</th>
+              <th>Sticker</th>
+              <th>Account</th>
+              <th title="The known purchase price saved for this inventory row.">Bought</th>
+              <th title="Latest dashboard market value using collected Steam-side price data.">Current</th>
+              <th title="Profit or loss compared with the saved purchase price.">P/L</th>
+              <th>Market</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="inventoryTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script id="records-json" type="application/json">__DATA_JSON__</script>
 <script id="series-json" type="application/json">__SERIES_JSON__</script>
+<script id="favorites-json" type="application/json">__FAVORITES_JSON__</script>
 <script>
 const records = JSON.parse(document.getElementById('records-json').textContent);
 const historySeries = JSON.parse(document.getElementById('series-json').textContent);
+const embeddedFavoriteIds = JSON.parse(document.getElementById('favorites-json').textContent);
 const verdictColors = __VERDICT_COLORS__;
 const verdictOrder = __VERDICT_ORDER__;
 let sortKey = 'priority_rank';
@@ -1903,7 +4444,24 @@ let sortDir = 1;
 let filtered = [];
 let viewMode = 'list';
 let modalHistoryOpen = false;
+let activeStickerModalId = null;
+let activeInventoryModalId = null;
+let priceFetchBusy = false;
+let inventoryItems = [];
+let inventoryViewMode = 'grid';
+let inventorySortMode = localStorage.getItem('cs2StickerInventorySort') || 'date_desc';
+let inventoryApiOnline = false;
+let selectedInventoryIds = new Set();
+let renderSequence = 0;
+let favoriteIds = new Set(Array.isArray(embeddedFavoriteIds) ? embeddedFavoriteIds.map(String) : []);
+let topTrueEdgeIds = new Set();
+const RENDER_CHUNK_SIZE = 70;
+const USD_PER_TOKEN = 0.99 / 100;
+const TOKENS_PER_USD = 100 / 0.99;
+const DEFAULT_VARIANTS = new Set(['Foil', 'Holo']);
+const ALL_VARIANTS = ['Paper', 'Foil', 'Holo', 'Gold'];
 const recordById = new Map(records.map(r => [String(r.sticker_id), r]));
+const FAVORITES_STORAGE_KEY = 'cs2StickerFavorites';
 
 const $ = (id) => document.getElementById(id);
 const hasNum = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
@@ -1913,6 +4471,73 @@ const pct = (v, d=0) => hasNum(v) ? `${Number(v).toFixed(d)}%` : '-';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tokens = (v) => hasNum(v) ? Math.round(Number(v)).toLocaleString() : '-';
 const money = (v) => hasNum(v) ? '$' + Number(v).toFixed(2) : '-';
+function favoriteId(r) {
+  return String(r?.sticker_id || r?.market_hash_name || r?.sticker || '');
+}
+function loadFavorites() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FAVORITES_STORAGE_KEY) || '[]');
+    favoriteIds = new Set([
+      ...(Array.isArray(embeddedFavoriteIds) ? embeddedFavoriteIds.map(String) : []),
+      ...(Array.isArray(parsed) ? parsed.map(String) : [])
+    ]);
+  } catch {
+    favoriteIds = new Set(Array.isArray(embeddedFavoriteIds) ? embeddedFavoriteIds.map(String) : []);
+  }
+}
+function saveFavorites() {
+  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...favoriteIds]));
+  syncFavoritesToServer();
+}
+async function syncFavoritesToServer() {
+  try {
+    await fetch('/api/favorites', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({favorites:[...favoriteIds]})
+    });
+  } catch {
+    // File-open mode keeps favorites in localStorage only.
+  }
+}
+async function mergeServerFavorites() {
+  try {
+    const response = await fetch('/api/favorites', {cache:'no-store'});
+    if (!response.ok) return;
+    const payload = await response.json();
+    const serverFavorites = Array.isArray(payload.favorites) ? payload.favorites.map(String) : [];
+    if (!serverFavorites.length) return;
+    const before = favoriteIds.size;
+    serverFavorites.forEach(id => favoriteIds.add(id));
+    if (favoriteIds.size !== before) {
+      localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...favoriteIds]));
+      applyFiltersPreservingScroll();
+    }
+  } catch {
+    // The static dashboard can run without inventory_server.py.
+  }
+}
+function isFavorite(r) {
+  const id = favoriteId(r);
+  return Boolean(id && favoriteIds.has(id));
+}
+function favoriteButtonHtml(r, compact=false) {
+  const id = favoriteId(r);
+  const active = isFavorite(r);
+  const label = active ? 'Remove favorite' : 'Add favorite';
+  return `<button class="favorite-btn ${compact ? 'compact' : ''} ${active ? 'active' : ''}" type="button" data-favorite="${esc(id)}" aria-pressed="${active}" title="${label}">${active ? '&#9733;' : '&#9734;'}${compact ? '' : `<span>${active ? 'Saved' : 'Favorite'}</span>`}</button>`;
+}
+function csgoskinsFetchable(r) {
+  return ['Holo', 'Foil'].includes(normalizedVariant(r));
+}
+function priceFetchButtonHtml(r, compact=false) {
+  const id = favoriteId(r);
+  const fetchable = csgoskinsFetchable(r);
+  const title = fetchable
+    ? 'Try to refresh the CSGOSkins lowest price and update true edge.'
+    : 'Live CSGOSkins refresh is limited to Holo/Foil to avoid slow or excessive requests.';
+  return `<button class="fetch-price-btn ${compact ? 'compact' : ''}" type="button" data-fetch-price="${esc(id)}" ${fetchable ? '' : 'disabled'} title="${esc(title)}">${compact ? '2P' : 'Fetch 2P'}</button>`;
+}
 function tokenUsdPair(tokenValue, r) {
   const historicalTokens = num(tokenValue);
   if (historicalTokens === null) return {tokens:'-', usd:'-'};
@@ -1964,10 +4589,265 @@ function priceRangeHtml(r, points=[]) {
   const previousChange = previousDeltaHtml(prevToken, r);
   const previousClass = previousChange.includes(' down') ? ' down' : previousChange.includes(' up') ? ' up' : '';
   return `<div class="price-range">
-    <div class="price-range-row prev${previousClass}"><span>Prev</span><div><b>${esc(previous.usd)}${previousChange}</b><small>${esc(previous.tokens)} tokens before current</small></div></div>
-    <div class="price-range-row low"><span>Low</span><div><b>${esc(low.usd)}</b><small>${esc(low.tokens)} tokens</small></div></div>
-    <div class="price-range-row high"><span>High</span><div><b>${esc(high.usd)}</b><small>${esc(high.tokens)} tokens</small></div></div>
+    <div class="price-range-row prev${previousClass}">${metricLabel('Prev')}<div><b>${esc(previous.usd)}${previousChange}</b><small>${esc(previous.tokens)} tokens before current</small></div></div>
+    <div class="price-range-row low">${metricLabel('Low')}<div><b>${esc(low.usd)}</b><small>${esc(low.tokens)} tokens</small></div></div>
+    <div class="price-range-row high">${metricLabel('High')}<div><b>${esc(high.usd)}</b><small>${esc(high.tokens)} tokens</small></div></div>
   </div>`;
+}
+function usdToTokens(value) {
+  const n = num(value);
+  return n === null ? null : n * TOKENS_PER_USD;
+}
+function steamLowUsd(r) {
+  const lowTokens = num(r?.hist_min);
+  const currentTokens = num(r?.price_tokens);
+  const currentUsd = num(r?.usd_price);
+  if (lowTokens === null || currentTokens === null || currentTokens <= 0 || currentUsd === null) return null;
+  return (lowTokens / currentTokens) * currentUsd;
+}
+function csgoskinsDiscountPct(r) {
+  const csgPrice = num(r?.csgoskins_low_usd);
+  const steamUsd = num(r?.usd_price);
+  if (csgPrice === null || steamUsd === null || steamUsd <= 0 || csgPrice <= 0) return null;
+  return ((steamUsd - csgPrice) / steamUsd) * 100;
+}
+function csgoskinsDiscountAbs(r) {
+  const csgPrice = num(r?.csgoskins_low_usd);
+  const steamUsd = num(r?.usd_price);
+  if (csgPrice === null || steamUsd === null || csgPrice <= 0) return null;
+  return steamUsd - csgPrice;
+}
+function csgoskinsTrueEdgePct(r) {
+  const csgPrice = num(r?.csgoskins_low_usd);
+  const lowUsd = steamLowUsd(r);
+  if (csgPrice === null || lowUsd === null || lowUsd <= 0 || csgPrice <= 0) return null;
+  return ((lowUsd - csgPrice) / lowUsd) * 100;
+}
+function csgoskinsTrueEdgeAbs(r) {
+  const csgPrice = num(r?.csgoskins_low_usd);
+  const lowUsd = steamLowUsd(r);
+  if (csgPrice === null || lowUsd === null || csgPrice <= 0) return null;
+  return lowUsd - csgPrice;
+}
+function marketplacePrice(r, key) {
+  const markets = r?.csgoskins_markets && typeof r.csgoskins_markets === 'object' ? r.csgoskins_markets : {};
+  if (key === 'CSFloat') return num(r?.csfloat_low_usd ?? markets.CSFloat);
+  if (key === 'UUSkins') return num(r?.uuskins_low_usd ?? markets.UUSkins);
+  return null;
+}
+function marketplaceSource(r, key) {
+  const sources = r?.csgoskins_market_sources && typeof r.csgoskins_market_sources === 'object' ? r.csgoskins_market_sources : {};
+  return sources[key] || '2P cache';
+}
+function marketplaceChipHtml(r, key, label, icon, cls) {
+  const price = marketplacePrice(r, key);
+  const unavailable = price === null;
+  const source = marketplaceSource(r, key);
+  const title = unavailable
+    ? `${label} price was not found in the cached CSGOSkins/SkinSniper offer data.`
+    : `${label} lowest offer parsed from ${source}.`;
+  return `<a class="store-chip ${cls} ${unavailable ? 'unavailable' : ''}" href="${esc(r.csgoskins_url || '#')}" target="_blank" rel="noopener" title="${esc(title)}"><span class="store-icon">${esc(icon)}</span><b>${unavailable ? '-' : money(price)}</b></a>`;
+}
+function marketplaceOffersHtml(r) {
+  if (!csgoskinsFetchable(r)) return '';
+  return `<div class="store-offers" aria-label="Marketplace offer prices parsed from CSGOSkins/SkinSniper">
+    ${marketplaceChipHtml(r, 'CSFloat', 'CSFloat', 'CF', 'csfloat')}
+    ${marketplaceChipHtml(r, 'UUSkins', 'UUSkins', 'UU', 'uuskins')}
+  </div>`;
+}
+function isCsgoskinsOpportunity(r) {
+  const variant = normalizedVariant(r);
+  const pctValue = csgoskinsTrueEdgePct(r);
+  const absValue = csgoskinsTrueEdgeAbs(r);
+  return ['Foil', 'Holo'].includes(variant) && pctValue !== null && absValue !== null && pctValue >= 10 && absValue >= 0.05;
+}
+function csgoskinsOpportunityTagHtml(r) {
+  if (!isCsgoskinsOpportunity(r)) return '';
+  return `<div class="price-opportunity-tag" title="CSGOSkins is materially cheaper than the collected Steam historical low. Verify liquidity, fees and seller reputation before buying.">True edge ${fmt(csgoskinsTrueEdgePct(r), 0)}% (${money(csgoskinsTrueEdgeAbs(r))})</div>`;
+}
+function csgoskinsTrueEdgeCardHtml(r) {
+  const csgPrice = num(r.csgoskins_low_usd);
+  const lowUsd = steamLowUsd(r);
+  if (csgPrice === null || lowUsd === null) {
+    return `<div class="market-price-card true-edge unavailable" title="Needs both CSGOSkins price and collected Steam historical low."><span>True Edge</span><b>-</b><small>vs Steam low unavailable</small></div>`;
+  }
+  const edgePct = csgoskinsTrueEdgePct(r);
+  const edgeAbs = csgoskinsTrueEdgeAbs(r);
+  const cls = edgePct === null || Math.abs(edgePct) < 0.5 ? 'flat' : edgePct > 0 ? 'pos' : 'neg';
+  const sign = edgePct !== null && edgePct > 0 ? '+' : '';
+  const cardClass = edgePct !== null && edgePct > 0 ? ' deal' : edgePct !== null && edgePct < -5 ? ' expensive' : '';
+  return `<div class="market-price-card true-edge${cardClass}" title="True edge compares CSGOSkins lowest price with the collected Steam historical low for this sticker. Positive means CSGOSkins is below the Steam low."><span>True Edge</span><b class="${cls}">${sign}${fmt(edgePct, 1)}%</b><small>${money(edgeAbs)} vs Steam low ${money(lowUsd)}</small></div>`;
+}
+function csgoskinsPriceHtml(r) {
+  const csgPrice = num(r.csgoskins_low_usd);
+  const steamUsd = num(r.usd_price);
+  const url = r.csgoskins_url || '#';
+  if (csgPrice === null) {
+    return `<a class="market-price-card skins unavailable" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(r.csgoskins_status || 'No cached CSGOSkins price')}"><span>CSGOSkins</span><b>Check</b><small>price unavailable</small></a>`;
+  }
+  const tokenEquivalent = usdToTokens(csgPrice);
+  const discount = csgoskinsDiscountPct(r);
+  const diffClass = discount === null || Math.abs(discount) < 0.5 ? 'flat' : discount > 0 ? 'pos' : 'neg';
+  const diffText = discount === null ? 'compare live' : discount > 0 ? `${fmt(discount, 1)}% cheaper` : `${fmt(Math.abs(discount), 1)}% higher`;
+  const cardClass = isCsgoskinsOpportunity(r) ? ' deal' : discount !== null && discount < -5 ? ' expensive' : '';
+  return `<a class="market-price-card skins${cardClass}" href="${esc(url)}" target="_blank" rel="noopener" title="Open CSGOSkins comparison. Positive discount means CSGOSkins is cheaper than the dashboard Steam price."><span>CSGOSkins</span><b>${money(csgPrice)}</b><small>${tokens(tokenEquivalent)} token eq. <em class="${diffClass}">${diffText}</em></small></a>`;
+}
+function priceCompareHtml(r) {
+  const steamUrl = r.steam_market_url || '#';
+  return `<div class="price-compare">
+    <a class="market-price-card steam" href="${esc(steamUrl)}" target="_blank" rel="noopener" title="Open this sticker on Steam Community Market. Price shown is from collected CS2Tokens data."><span>Steam</span><b>${money(r.usd_price)}</b><small>${tokens(r.price_tokens)} tokens</small></a>
+    <div class="market-price-card steam-low" title="Collected historical low converted to USD using the current token-to-USD ratio."><span>Steam Low</span><b>${money(steamLowUsd(r))}</b><small>${tokens(r.hist_min)} low tokens</small></div>
+    ${csgoskinsPriceHtml(r)}
+    ${csgoskinsTrueEdgeCardHtml(r)}
+    ${marketplaceOffersHtml(r)}
+  </div>`;
+}
+function gridPriceStackHtml(r) {
+  const high = tokenUsdPair(r.hist_max, r);
+  const trueEdge = csgoskinsTrueEdgePct(r);
+  const trueEdgeClass = trueEdge === null || Math.abs(trueEdge) < 0.5 ? 'flat' : trueEdge > 0 ? 'pos' : 'neg';
+  const trueEdgeText = trueEdge === null ? '-' : `${trueEdge > 0 ? '+' : ''}${fmt(trueEdge, 0)}%`;
+  return `<span class="grid-prices" title="Current Steam, Steam low, Steam high, CSGOSkins lowest, and true edge versus Steam low.">
+    <span><small>Steam</small><b>${money(r.usd_price)}</b></span>
+    <span><small>Low</small><b>${money(steamLowUsd(r))}</b></span>
+    <span><small>High</small><b>${esc(high.usd)}</b></span>
+    <span><small>2P</small><b>${money(r.csgoskins_low_usd)}</b></span>
+    <span><small>Edge</small><b class="${trueEdgeClass}">${trueEdgeText}</b></span>
+  </span>`;
+}
+function recordForFetchId(id) {
+  const key = String(id || '');
+  return records.find(r =>
+    favoriteId(r) === key ||
+    String(r.sticker_id || '') === key ||
+    String(r.market_hash_name || '') === key ||
+    String(r.sticker || '') === key
+  ) || null;
+}
+function priceFetchPayload(r) {
+  return {
+    id: favoriteId(r),
+    sticker_id: r.sticker_id || '',
+    sticker: r.sticker || '',
+    variant: normalizedVariant(r),
+    market_hash_name: r.market_hash_name || '',
+    csgoskins_url: r.csgoskins_url || '',
+    steam_market_url: r.steam_market_url || ''
+  };
+}
+function setPriceFetchStatus(message, tone='') {
+  ['priceFetchStatus', 'priceFetchInlineStatus', 'priceFetchToast'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = message;
+    el.dataset.tone = tone;
+    if (id === 'priceFetchToast') {
+      const visible = tone && message && !/idle/i.test(message);
+      el.dataset.visible = visible ? 'true' : 'false';
+    }
+  });
+}
+function setPriceFetchButtonsBusy(isBusy) {
+  const refresh = $('refreshFavoritePricesBtn');
+  if (refresh) {
+    refresh.disabled = isBusy;
+    refresh.textContent = isBusy ? 'Refreshing...' : 'Refresh Favorites';
+  }
+  document.querySelectorAll('.fetch-price-btn').forEach(button => {
+    button.classList.toggle('busy', isBusy);
+    if (isBusy) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+  });
+}
+function applyFetchedCsgoskinsPrice(item) {
+  const r = recordForFetchId(item?.id || item?.sticker_id || item?.market_hash_name || item?.sticker);
+  if (!r) return false;
+  if (item.csgoskins_url) r.csgoskins_url = item.csgoskins_url;
+  if ('price' in item) r.csgoskins_low_usd = num(item.price);
+  const markets = item.markets && typeof item.markets === 'object' ? item.markets : {};
+  r.csgoskins_markets = markets;
+  r.csgoskins_market_sources = item.market_sources && typeof item.market_sources === 'object' ? item.market_sources : {};
+  r.csfloat_low_usd = num(item.csfloat_low_usd ?? markets.CSFloat);
+  r.uuskins_low_usd = num(item.uuskins_low_usd ?? markets.UUSkins);
+  if (item.status) r.csgoskins_status = String(item.status);
+  if (item.last_error) r.csgoskins_last_error = String(item.last_error);
+  return true;
+}
+function refreshOpenStickerModal() {
+  const modal = $('detailModal');
+  const content = $('modalContent');
+  if (!modal || modal.hidden || !content || !activeStickerModalId) return;
+  const r = recordForFetchId(activeStickerModalId);
+  const item = activeInventoryModalId ? inventoryItems.find(row => row.inventory_id === activeInventoryModalId) : null;
+  if (r) content.innerHTML = stickerDetailsHtml(r, item || null);
+}
+async function fetchCsgoskinsPricesFor(rows, label='selected stickers') {
+  if (priceFetchBusy) {
+    setPriceFetchStatus('A 2P price refresh is already running.', 'warn');
+    return;
+  }
+  const unique = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    if (!r) return;
+    const id = favoriteId(r);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    unique.push(r);
+  });
+  const eligible = unique.filter(csgoskinsFetchable);
+  if (!eligible.length) {
+    setPriceFetchStatus('No Holo/Foil stickers selected for 2P refresh.', 'warn');
+    return;
+  }
+
+  priceFetchBusy = true;
+  document.body.classList.add('price-fetching');
+  setPriceFetchButtonsBusy(true);
+  setPriceFetchStatus(`Refreshing ${eligible.length} ${label}...`, 'busy');
+  try {
+    const response = await fetch('/api/csgoskins-price', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({items:eligible.map(priceFetchPayload)})
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`HTTP ${response.status}${text ? ` - ${text.slice(0, 160)}` : ''}`);
+    }
+    const payload = await response.json();
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    items.forEach(applyFetchedCsgoskinsPrice);
+    computeSignalSets();
+    applyFiltersPreservingScroll();
+    refreshOpenStickerModal();
+    const priced = items.filter(item => num(item.price) !== null).length;
+    const csfloat = items.filter(item => num(item.csfloat_low_usd ?? item.markets?.CSFloat) !== null).length;
+    const uuskins = items.filter(item => num(item.uuskins_low_usd ?? item.markets?.UUSkins) !== null).length;
+    const fallback = items.filter(item => item.fallback_status || Object.values(item.market_sources || {}).includes('SkinSniper')).length;
+    const live = items.filter(item => item.status === 'ok').length;
+    const cached = items.filter(item => item.status === 'ok_cached_after_error').length;
+    const failed = items.filter(item => String(item.status || '').startsWith('error')).length;
+    const errorKinds = [...new Set(items
+      .map(item => String(item.status || ''))
+      .filter(status => status.startsWith('error'))
+    )].slice(0, 3).join(', ');
+    const details = [
+      live ? `${live} live` : '',
+      cached ? `${cached} cached` : '',
+      fallback ? `${fallback} fallback` : '',
+      `CF ${csfloat}`,
+      `UU ${uuskins}`,
+      failed ? `${failed} failed${errorKinds ? `: ${errorKinds}` : ''}` : ''
+    ].filter(Boolean).join(', ');
+    setPriceFetchStatus(`2P refresh done: ${priced}/${items.length} priced${details ? ` (${details})` : ''}.`, failed ? 'warn' : 'ok');
+  } catch (error) {
+    setPriceFetchStatus(`2P refresh failed: ${error.message || error}. Run python inventory_server.py and open the localhost dashboard URL.`, 'error');
+  } finally {
+    priceFetchBusy = false;
+    document.body.classList.remove('price-fetching');
+    setPriceFetchButtonsBusy(false);
+  }
 }
 function lowGapHtml(r) {
   if (isReleaseLow(r)) return '<div class="release-low-badge">Current low</div>';
@@ -1977,9 +4857,95 @@ function lowGapHtml(r) {
   const digits = gap < 10 ? 1 : 0;
   return `<div class="low-gap-badge${cls}">+${fmt(gap, digits)}% above low</div>`;
 }
+function compactNumber(v) {
+  const n = num(v);
+  if (n === null) return '-';
+  const abs = Math.abs(n);
+  if (abs >= 1000000) return `${(n / 1000000).toFixed(abs >= 10000000 ? 0 : 1)}M`;
+  if (abs >= 1000) return `${(n / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`;
+  return Math.round(n).toLocaleString();
+}
+function activityMetrics(r) {
+  const row = r || {};
+  const latest = num(row.latest_popularity);
+  const positive = num(row.positive_popularity_sum);
+  const pressure = num(row.absolute_popularity_pressure);
+  const share = num(row.latest_relative_demand_share);
+  const primary = latest !== null ? latest : positive !== null ? positive : pressure;
+  return {latest, positive, pressure, share, primary};
+}
+function marketCounterHtml(r, mode='full') {
+  const metrics = activityMetrics(r);
+  const title = [
+    'CS2Tokens market activity counter',
+    metrics.latest !== null ? `Latest popularity: ${Math.round(metrics.latest).toLocaleString()}` : '',
+    metrics.positive !== null ? `Positive activity sum: ${Math.round(metrics.positive).toLocaleString()}` : '',
+    metrics.pressure !== null ? `Activity pressure: ${Math.round(metrics.pressure).toLocaleString()}` : '',
+    metrics.share !== null ? `Relative demand share: ${metrics.share.toFixed(6)}` : '',
+    'This is collected activity/popularity, not a verified Steam listing supply count.'
+  ].filter(Boolean).join('\n');
+  if (metrics.primary === null) {
+    return `<span class="market-count muted" title="${esc(title)}"><span class="market-count-dot"></span>No activity</span>`;
+  }
+  const label = mode === 'mini' ? compactNumber(metrics.primary) : `${compactNumber(metrics.primary)} activity`;
+  const extra = mode === 'full' && metrics.positive !== null ? `<small>${compactNumber(metrics.positive)} positive</small>` : '';
+  return `<span class="market-count ${mode}" title="${esc(title)}"><span class="market-count-dot"></span><b>${esc(label)}</b>${extra}</span>`;
+}
+const metricDescriptions = {
+  'P/L':'Profit or loss compared with the known purchase price saved in inventory. Blank buy prices are excluded.',
+  'Known Cost':'The buy price you entered for the inventory row or portfolio summary.',
+  'Current':'Latest dashboard market value using collected Steam-side price data.',
+  'Expected':'Model-estimated upside from current price, based on discount, trend, demand, quality and risk features.',
+  'Value Edge':'Combined relative-value score. Higher means the sticker looks cheaper versus its history and peers after risk adjustments.',
+  'Quality':'Manual visual grade from scores.csv where available, with neutral fallback for unscored stickers.',
+  'Score Conf.':'Confidence in the quality score. Low values usually mean the sticker has not been manually scored yet.',
+  'Manual':'Count or weight of manual score inputs used for the sticker.',
+  'Manual Score':'Count or weight of manual score inputs used for the sticker.',
+  'Demand':'Demand momentum from CS2Tokens popularity/activity history. Higher is stronger collected demand.',
+  'Activity':'CS2Tokens popularity/activity counter, not verified Steam listing supply.',
+  'Flood':'Model estimate of listing/supply pressure. Lower flood is usually healthier for upside.',
+  'Discount':'How far current price is below the collected historical high.',
+  'Change':'Most recent price change from snapshots/history.',
+  'Entry':'Price bucket. Cheaper entries allow wider diversification, but still need quality and demand.',
+  'Priority':'Final ranking score combining the model signals.',
+  'Size':'Suggested maximum buy size from the model.',
+  'Confidence':'Prediction confidence from available data/history.',
+  'Prev':'Price point immediately before the current/latest point in the collected series.',
+  'Low':'Lowest collected price since release/history start.',
+  'High':'Highest collected price since release/history start.'
+};
+function metricLabel(label) {
+  const title = metricDescriptions[label];
+  return `<span${title ? ` class="metric-label" title="${esc(title)}"` : ''}>${esc(label)}</span>`;
+}
 const colorForVerdict = (v) => verdictColors[v] || '#94a3b8';
 const pctClass = (v) => !hasNum(v) ? 'flat' : Number(v) > 0.5 ? 'pos' : Number(v) < -0.5 ? 'neg' : 'flat';
 const shortName = (s, n=25) => String(s || '').replace(/\s*\((Paper|Foil|Holo)\)/i, '').slice(0, n);
+const rarityPalette = {
+  rarity_rare: {label:'High Grade', cls:'rarity-rare', accent:'#64a8ff', accent2:'#78f0ff', bg:'rgba(100,168,255,.18)', soft:'rgba(100,168,255,.075)'},
+  rarity_mythical: {label:'Remarkable', cls:'rarity-mythical', accent:'#a78bfa', accent2:'#f0abfc', bg:'rgba(167,139,250,.18)', soft:'rgba(167,139,250,.075)'},
+  rarity_legendary: {label:'Exotic', cls:'rarity-legendary', accent:'#ff7ad9', accent2:'#7dd3fc', bg:'rgba(255,122,217,.18)', soft:'rgba(255,122,217,.075)'},
+  rarity_ancient: {label:'Extraordinary', cls:'rarity-ancient', accent:'#fbbf24', accent2:'#fde68a', bg:'rgba(251,191,36,.18)', soft:'rgba(251,191,36,.075)'},
+};
+
+function rarityInfo(r) {
+  const id = String(r?.rarity_id || '').trim();
+  if (rarityPalette[id]) return rarityPalette[id];
+  const variant = String(r?.variant || r?.category || '').toLowerCase();
+  if (variant.includes('gold')) return rarityPalette.rarity_ancient;
+  if (variant.includes('holo')) return rarityPalette.rarity_legendary;
+  if (variant.includes('foil')) return rarityPalette.rarity_mythical;
+  return rarityPalette.rarity_rare;
+}
+
+function rarityStyleAttr(r) {
+  const info = rarityInfo(r);
+  return `style="--rarity:${info.accent};--rarity2:${info.accent2};--rarity-bg:${info.bg};--rarity-soft:${info.soft};"`;
+}
+
+function rarityClass(r) {
+  return `rarity-accent ${rarityInfo(r).cls}`;
+}
 
 function uniqueValues(key) {
   return [...new Set(records.map(r => r[key]).filter(v => v !== null && v !== undefined && String(v).trim() !== ''))].sort((a,b) => String(a).localeCompare(String(b)));
@@ -1995,13 +4961,56 @@ function fillSelect(id, key) {
   });
 }
 
+function variantCheckboxes() {
+  return Array.from(document.querySelectorAll('[data-variant-option]'));
+}
+
+function selectedVariants() {
+  return variantCheckboxes()
+    .filter(input => input.checked)
+    .map(input => normalizedVariant({variant:input.value}));
+}
+
+function syncVariantFilterLabel() {
+  const button = $('variantFilterButton');
+  if (!button) return;
+  const selected = selectedVariants();
+  button.textContent = selected.length ? selected.join(', ') : 'All variants';
+}
+
+function resetVariantFilter() {
+  variantCheckboxes().forEach(input => {
+    input.checked = DEFAULT_VARIANTS.has(normalizedVariant({variant:input.value}));
+  });
+  syncVariantFilterLabel();
+}
+
+function closeVariantMenu() {
+  const shell = $('variantFilter');
+  if (!shell) return;
+  shell.dataset.open = 'false';
+  $('variantFilterButton')?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleVariantMenu() {
+  const shell = $('variantFilter');
+  if (!shell) return;
+  const open = shell.dataset.open !== 'true';
+  shell.dataset.open = String(open);
+  $('variantFilterButton')?.setAttribute('aria-expanded', String(open));
+}
+
 function makeOptions() {
   fillSelect('verdictFilter', 'verdict');
-  fillSelect('variantFilter', 'variant');
   fillSelect('typeFilter', 'display_type');
   fillSelect('categoryFilter', 'category');
   fillSelect('entryFilter', 'entry_tier');
   fillSelect('floodFilter', 'flood_risk');
+  syncVariantFilterLabel();
+  const inventoryOptions = $('inventoryStickerOptions');
+  if (inventoryOptions) {
+    inventoryOptions.innerHTML = records.map(r => `<option value="${esc(r.sticker)}"></option>`).join('');
+  }
 }
 
 function withNorm(points) {
@@ -2097,6 +5106,7 @@ function sparkline(rawPoints, r, width=260, height=88) {
 function rowHtml(r) {
   const points = historySeries[r.sticker_id] || [];
   const link = r.item_url || '#';
+  const steamUrl = r.steam_market_url || '#';
   const vcolor = colorForVerdict(r.verdict);
   const expectedClass = pctClass(r.expected_return_pct);
   const demandClass = pctClass(r.demand_momentum_score);
@@ -2104,8 +5114,9 @@ function rowHtml(r) {
   const image = r.image_url || '';
   const typeLabel = r.display_type || r.category || '-';
   const atReleaseLow = isReleaseLow(r);
-  return `<tr class="${atReleaseLow ? 'release-low-row' : ''}">
-    <td data-label="Rank"><div class="rank">#${esc(r.priority_rank)}</div><div class="tier">${esc(r.priority_tier || '')}</div></td>
+  const thirdPartyDeal = isCsgoskinsOpportunity(r);
+  return `<tr class="${atReleaseLow ? 'release-low-row' : ''} ${thirdPartyDeal ? 'third-party-row' : ''} ${rarityClass(r)}" ${rarityStyleAttr(r)}>
+    <td data-label="Rank"><div class="rank">#${esc(r.priority_rank)}</div><div class="tier">${esc(r.priority_tier || '')}</div>${signalTagsHtml(r, 'row')}</td>
     <td data-label="Sticker">
       <div class="sticker-cell">
         <img class="thumb" src="${esc(image)}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" />
@@ -2118,7 +5129,11 @@ function rowHtml(r) {
             <span class="chip">${r.scored ? 'Scored' : 'Unscored'}</span>
           </div>
           <div class="actions">
+            ${favoriteButtonHtml(r)}
             <a class="action primary" href="${esc(link)}" target="_blank" rel="noopener">CS2Tokens</a>
+            <a class="action steam-action" href="${esc(steamUrl)}" target="_blank" rel="noopener">Steam</a>
+            <a class="action skins-action" href="${esc(r.csgoskins_url || '#')}" target="_blank" rel="noopener">CSGOSkins</a>
+            ${priceFetchButtonHtml(r)}
           </div>
         </div>
       </div>
@@ -2126,35 +5141,38 @@ function rowHtml(r) {
     <td data-label="Price">
       <div class="price-main">${money(r.usd_price)}</div>
       <div class="price-sub">${tokens(r.price_tokens)} tokens</div>
+      ${priceCompareHtml(r)}
+      ${csgoskinsOpportunityTagHtml(r)}
       ${lowGapHtml(r)}
       ${priceRangeHtml(r, points)}
       <div class="metric-list">
-        <div class="metric-row"><span>Entry</span><b>${esc(r.entry_tier || '-')}</b></div>
+        <div class="metric-row">${metricLabel('Entry')}<b>${esc(r.entry_tier || '-')}</b></div>
       </div>
     </td>
     <td data-label="Decision">
       <span class="verdict" style="background:${vcolor}">${esc(r.verdict || '-')}</span>
       <div class="metric-list">
-        <div class="metric-row"><span>Priority</span><b>${fmt(r.priority_score,1)}</b></div>
-        <div class="metric-row"><span>Size</span><b>${esc(r.suggested_size || '-')}</b></div>
-        <div class="metric-row"><span>Confidence</span><b>${fmt(r.prediction_confidence,2)}</b></div>
+        <div class="metric-row">${metricLabel('Priority')}<b>${fmt(r.priority_score,1)}</b></div>
+        <div class="metric-row">${metricLabel('Size')}<b>${esc(r.suggested_size || '-')}</b></div>
+        <div class="metric-row">${metricLabel('Confidence')}<b>${fmt(r.prediction_confidence,2)}</b></div>
       </div>
     </td>
     <td data-label="Edge & Scores">
       <div class="metric-list" style="margin-top:0">
-        <div class="metric-row"><span>Expected</span><b class="${expectedClass}">${pct(r.expected_return_pct,0)}</b></div>
-        <div class="metric-row"><span>Value Edge</span><b>${fmt(r.value_edge_score,2)}</b></div>
-        <div class="metric-row"><span>Quality</span><b>${fmt(r.quality_score,2)}</b></div>
-        <div class="metric-row"><span>Score Conf.</span><b>${fmt(r.score_confidence,2)}</b></div>
-        <div class="metric-row"><span>Manual</span><b>${fmt(r.manual_score_count,0)}</b></div>
+        <div class="metric-row">${metricLabel('Expected')}<b class="${expectedClass}">${pct(r.expected_return_pct,0)}</b></div>
+        <div class="metric-row">${metricLabel('Value Edge')}<b>${fmt(r.value_edge_score,2)}</b></div>
+        <div class="metric-row">${metricLabel('Quality')}<b>${fmt(r.quality_score,2)}</b></div>
+        <div class="metric-row">${metricLabel('Score Conf.')}<b>${fmt(r.score_confidence,2)}</b></div>
+        <div class="metric-row">${metricLabel('Manual')}<b>${fmt(r.manual_score_count,0)}</b></div>
       </div>
     </td>
     <td data-label="Market">
       <div class="metric-list" style="margin-top:0">
-        <div class="metric-row"><span>Flood</span><b>${esc(r.flood_risk || '-')} (${fmt(r.flood_risk_score,2)})</b></div>
-        <div class="metric-row"><span>Discount</span><b>${pct(r.discount_from_high_pct,0)}</b></div>
-        <div class="metric-row"><span>Demand</span><b class="${demandClass}">${fmt(r.demand_momentum_score,2)}</b></div>
-        <div class="metric-row"><span>Change</span><b class="${pctClass(changeValue)}">${pct(changeValue,1)}</b></div>
+        <div class="metric-row market-activity-row">${metricLabel('Activity')}<b>${marketCounterHtml(r, 'full')}</b></div>
+        <div class="metric-row">${metricLabel('Flood')}<b>${esc(r.flood_risk || '-')} (${fmt(r.flood_risk_score,2)})</b></div>
+        <div class="metric-row">${metricLabel('Discount')}<b>${pct(r.discount_from_high_pct,0)}</b></div>
+        <div class="metric-row">${metricLabel('Demand')}<b class="${demandClass}">${fmt(r.demand_momentum_score,2)}</b></div>
+        <div class="metric-row">${metricLabel('Change')}<b class="${pctClass(changeValue)}">${pct(changeValue,1)}</b></div>
       </div>
       ${sparkline(points, r)}
     </td>
@@ -2187,9 +5205,12 @@ function gridCardHtml(r) {
   const typeLabel = r.display_type || r.category || '-';
   const image = r.image_url || '';
   const id = String(r.sticker_id || r.sticker || r.priority_rank);
-  return `<button class="grid-card ${atReleaseLow ? 'release-low-card' : ''}" type="button" data-id="${esc(id)}" aria-label="Open details for ${esc(r.sticker)}">
+  const thirdPartyDeal = isCsgoskinsOpportunity(r);
+  return `<div class="grid-card ${rarityClass(r)} ${atReleaseLow ? 'release-low-card' : ''} ${thirdPartyDeal ? 'third-party-card' : ''}" ${rarityStyleAttr(r)} role="button" tabindex="0" data-id="${esc(id)}" aria-label="Open details for ${esc(r.sticker)}">
     <span class="grid-rank">#${esc(r.priority_rank)}</span>
     <span class="grid-tier">${esc(r.priority_tier || '')}</span>
+    ${favoriteButtonHtml(r, true)}
+    ${signalTagsHtml(r, 'grid')}
     ${atReleaseLow ? '<span class="grid-low-ribbon" title="Current low"></span>' : ''}
     <span class="grid-image"><img src="${esc(image)}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" alt="${esc(r.sticker)}" /></span>
     <span class="grid-title">
@@ -2201,20 +5222,39 @@ function gridCardHtml(r) {
         <span class="grid-verdict-pill" style="background:${vcolor}">${esc(r.verdict || '-')}</span>
         <span class="grid-price">${money(r.usd_price)}</span>
       </span>
+      ${thirdPartyDeal ? `<span class="grid-deal-tag" title="CSGOSkins is below the collected Steam low by ${fmt(csgoskinsTrueEdgePct(r), 1)}%.">True edge ${fmt(csgoskinsTrueEdgePct(r), 0)}%</span>` : ''}
+      ${gridPriceStackHtml(r)}
+      ${priceFetchButtonHtml(r, true)}
+      <span class="grid-market-counter">${marketCounterHtml(r, 'mini')}</span>
       <span class="grid-kpis">
-        <span class="grid-kpi"><small>Expected</small><b class="${expectedClass}"><span class="signal-dot ${signalFor(r.expected_return_pct, atReleaseLow)}"></span>${pct(r.expected_return_pct,0)}</b></span>
-        <span class="grid-kpi"><small>Demand</small><b class="${demandClass}"><span class="signal-dot ${signalFor(r.demand_momentum_score)}"></span>${fmt(r.demand_momentum_score,2)}</b></span>
-        <span class="grid-kpi"><small>Change</small><b class="${changeClass}"><span class="signal-dot ${signalFor(changeValue)}"></span>${pct(changeValue,1)}</b></span>
+        <span class="grid-kpi" title="${esc(metricDescriptions.Expected)}"><small>Expected</small><b class="${expectedClass}"><span class="signal-dot ${signalFor(r.expected_return_pct, atReleaseLow)}"></span>${pct(r.expected_return_pct,0)}</b></span>
+        <span class="grid-kpi" title="${esc(metricDescriptions.Demand)}"><small>Demand</small><b class="${demandClass}"><span class="signal-dot ${signalFor(r.demand_momentum_score)}"></span>${fmt(r.demand_momentum_score,2)}</b></span>
       </span>
     </span>
-  </button>`;
-}
+  </div>`;
+  }
 
 function modalMetric(label, value, cls='') {
-  return `<div class="metric-row"><span>${esc(label)}</span><b class="${cls}">${value}</b></div>`;
+  return `<div class="metric-row">${metricLabel(label)}<b class="${cls}">${value}</b></div>`;
 }
 
-function stickerDetailsHtml(r) {
+function inventoryContextHtml(item, r) {
+  if (!item) return '';
+  const pnl = inventoryPnl(item, r);
+  const pnlValue = pnl.usdPct !== null
+    ? `${pnl.usdAbs >= 0 ? '+' : ''}${money(pnl.usdAbs)} (${pnl.usdPct >= 0 ? '+' : ''}${fmt(pnl.usdPct, 1)}%)`
+    : pnl.tokenPct !== null
+      ? `${pnl.tokenPct >= 0 ? '+' : ''}${fmt(pnl.tokenPct, 1)}% tokens`
+      : '-';
+  return `<div class="inventory-context-panel" aria-label="Inventory purchase context">
+    <div class="inventory-context-item"><span>Account</span><b>${esc(item.steam_account || '-')}</b><small>${esc(item.acquired_at || 'No buy date')}</small></div>
+    <div class="inventory-context-item"><span>Buying Price</span><b>${esc(boughtLabel(item))}</b><small>${esc(metricDescriptions['Known Cost'])}</small></div>
+    <div class="inventory-context-item"><span>Current Value</span><b>${money(pnl.currentUsd)}</b><small>${tokens(pnl.currentTokens)} tokens now</small></div>
+    <div class="inventory-context-item"><span>P/L</span><b class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}">${esc(pnlValue)}</b><small>${esc(metricDescriptions['P/L'])}</small></div>
+  </div>`;
+}
+
+function stickerDetailsHtml(r, inventoryItem=null) {
   const points = historySeries[r.sticker_id] || [];
   const vcolor = colorForVerdict(r.verdict);
   const expectedClass = pctClass(r.expected_return_pct);
@@ -2223,12 +5263,13 @@ function stickerDetailsHtml(r) {
   const changeClass = pctClass(changeValue);
   const typeLabel = r.display_type || r.category || '-';
   const link = r.item_url || '#';
+  const steamUrl = r.steam_market_url || '#';
   const image = r.image_url || '';
   return `<div class="modal-grid">
-    <div class="modal-visual">
+    <div class="modal-visual ${rarityClass(r)}" ${rarityStyleAttr(r)}>
       <span class="modal-rank">#${esc(r.priority_rank)} ${esc(r.priority_tier || '')}</span>
       <img src="${esc(image)}" alt="${esc(r.sticker)}" />
-      <div class="actions"><a class="action primary" href="${esc(link)}" target="_blank" rel="noopener">Open CS2Tokens</a></div>
+      <div class="actions">${favoriteButtonHtml(r)}<a class="action primary" href="${esc(link)}" target="_blank" rel="noopener">Open CS2Tokens</a><a class="action steam-action" href="${esc(steamUrl)}" target="_blank" rel="noopener">Open Steam</a><a class="action skins-action" href="${esc(r.csgoskins_url || '#')}" target="_blank" rel="noopener">Open CSGOSkins</a>${priceFetchButtonHtml(r)}<button class="action" type="button" data-add-inventory="${esc(r.sticker_id)}">Add to Inventory</button></div>
     </div>
     <div class="modal-main">
       <div class="modal-title-row">
@@ -2237,6 +5278,10 @@ function stickerDetailsHtml(r) {
       </div>
       <div class="modal-meta">${esc(r.player_name || r.team_name || r.team || 'No team')} | ${esc(typeLabel)} | ${esc(r.variant || '-')}</div>
       <div class="modal-price"><b>${money(r.usd_price)}</b><span>${tokens(r.price_tokens)} tokens</span></div>
+      ${inventoryContextHtml(inventoryItem, r)}
+      ${priceCompareHtml(r)}
+      ${csgoskinsOpportunityTagHtml(r)}
+      <div class="modal-market-count">${marketCounterHtml(r, 'full')}</div>
       ${lowGapHtml(r)}
       ${priceRangeHtml(r, points)}
       <div class="modal-sections">
@@ -2262,6 +5307,7 @@ function stickerDetailsHtml(r) {
           <h3>Market</h3>
           <div class="metric-list" style="margin-top:0">
             ${modalMetric('Flood', `${esc(r.flood_risk || '-')} (${fmt(r.flood_risk_score,2)})`)}
+            ${modalMetric('Activity', marketCounterHtml(r, 'full'))}
             ${modalMetric('Discount', pct(r.discount_from_high_pct,0))}
             ${modalMetric('Demand', fmt(r.demand_momentum_score,2), demandClass)}
             ${modalMetric('Change', pct(changeValue,1), changeClass)}
@@ -2287,13 +5333,14 @@ function stickerDetailsHtml(r) {
 function applyFilters() {
   const q = $('search').value.trim().toLowerCase();
   const verdict = $('verdictFilter').value;
-  const variant = $('variantFilter').value;
+  const variants = selectedVariants();
   const type = $('typeFilter').value;
   const category = $('categoryFilter').value;
   const entry = $('entryFilter').value;
   const flood = $('floodFilter').value;
   const scored = $('scoredFilter').value;
   const priceState = $('priceStateFilter').value;
+  const favoriteFilter = $('favoriteFilter').value;
   const sortPreset = $('sortPreset').value;
   const minConfidence = num($('confidenceFilter').value);
   const maxPrice = num($('priceMax').value);
@@ -2301,12 +5348,14 @@ function applyFilters() {
 
   filtered = records.filter(r => {
     if (verdict && r.verdict !== verdict) return false;
-    if (variant && r.variant !== variant) return false;
+    if (variants.length && !variants.includes(normalizedVariant(r))) return false;
     if (type && r.display_type !== type) return false;
     if (category && r.category !== category) return false;
     if (entry && r.entry_tier !== entry) return false;
     if (flood && r.flood_risk !== flood) return false;
     if (scored && String(r.scored) !== scored) return false;
+    if (favoriteFilter === 'favorites' && !isFavorite(r)) return false;
+    if (favoriteFilter === 'not_favorites' && isFavorite(r)) return false;
     if (priceState === 'current_low' && !isReleaseLow(r)) return false;
     if (priceState === 'above_low' && isReleaseLow(r)) return false;
     if (minConfidence !== null && (!hasNum(r.prediction_confidence) || Number(r.prediction_confidence) < minConfidence)) return false;
@@ -2332,9 +5381,40 @@ function applyFilters() {
   renderCharts();
 }
 
+function scheduleFrame(callback) {
+  let called = false;
+  const run = () => {
+    if (called) return;
+    called = true;
+    callback();
+  };
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(run);
+  }
+  window.setTimeout(run, document.hidden ? 16 : 80);
+}
+
+function applyFiltersPreservingScroll() {
+  const y = window.scrollY;
+  const x = window.scrollX;
+  const tableWrap = document.querySelector('.table-wrap');
+  const tableLeft = tableWrap ? tableWrap.scrollLeft : 0;
+  applyFilters();
+  const restore = () => {
+    window.scrollTo(x, y);
+    if (tableWrap) tableWrap.scrollLeft = tableLeft;
+  };
+  scheduleFrame(restore);
+  setTimeout(restore, 80);
+  setTimeout(restore, 260);
+}
+
 function applySortPreset(sortPreset) {
   if (!sortPreset) return;
-  if (sortPreset === 'current_low') {
+  if (sortPreset === 'third_party_edge') {
+    sortKey = 'third_party_discount_pct';
+    sortDir = -1;
+  } else if (sortPreset === 'current_low') {
     sortKey = 'current_low';
     sortDir = -1;
   } else if (sortPreset === 'low_gap') {
@@ -2347,12 +5427,27 @@ function applySortPreset(sortPreset) {
     sortKey = 'price_tokens';
     sortDir = -1;
   }
-  $('sortHint').textContent = `Sorted by ${sortPreset.replace(/_/g, ' ')}`;
+  const sortLabels = {
+    third_party_edge:'2nd-party true edge',
+    current_low:'current low',
+    low_gap:'distance from low',
+    price_asc:'price low to high',
+    price_desc:'price high to low'
+  };
+  $('sortHint').textContent = `Sorted by ${sortLabels[sortPreset] || sortPreset.replace(/_/g, ' ')}`;
 }
 
 function compareValues(a, b) {
   if (sortKey === 'verdict') {
     return (verdictOrder[a.verdict] ?? 99) - (verdictOrder[b.verdict] ?? 99);
+  }
+  if (sortKey === 'third_party_discount_pct') {
+    const an = csgoskinsTrueEdgePct(a);
+    const bn = csgoskinsTrueEdgePct(b);
+    if (an === null && bn === null) return Number(b.priority_rank || 9999) - Number(a.priority_rank || 9999);
+    if (an === null) return -1;
+    if (bn === null) return 1;
+    return an - bn;
   }
   const av = a[sortKey], bv = b[sortKey];
   const an = num(av), bn = num(bv);
@@ -2394,6 +5489,71 @@ function applyGridColumnSetting() {
   if (controls) controls.classList.toggle('active', viewMode === 'grid');
 }
 
+function renderChunked(container, rows, renderer, emptyHtml, done) {
+  const token = ++renderSequence;
+  if (!container) return;
+  const previousHeight = container.offsetHeight;
+  if (previousHeight > 0) container.style.minHeight = `${previousHeight}px`;
+  container.innerHTML = '';
+  if (!rows.length) {
+    container.innerHTML = emptyHtml;
+    container.style.minHeight = '';
+    if (done) done();
+    return;
+  }
+  if (typeof window.requestAnimationFrame !== 'function' || document.hidden) {
+    container.innerHTML = rows.map(renderer).join('');
+    container.style.minHeight = '';
+    if (done) done();
+    return;
+  }
+  let index = 0;
+  const step = () => {
+    if (token !== renderSequence) return;
+    const chunk = rows.slice(index, index + RENDER_CHUNK_SIZE).map(renderer).join('');
+    container.insertAdjacentHTML('beforeend', chunk);
+    index += RENDER_CHUNK_SIZE;
+    const hint = $('renderHint');
+    if (hint && rows.length > RENDER_CHUNK_SIZE) {
+      hint.textContent = `Rendering ${Math.min(index, rows.length).toLocaleString()} of ${rows.length.toLocaleString()} matched rows.`;
+    }
+    if (index < rows.length) {
+      scheduleFrame(step);
+    } else {
+      container.style.minHeight = '';
+      if (done) done();
+    }
+  };
+  scheduleFrame(step);
+}
+
+function inventoryGridColumnCount() {
+  const mode = $('inventoryGridCols')?.value || '5';
+  const custom = $('inventoryCustomCols');
+  let count = mode === 'auto' ? (isMobileLayout() ? 2 : 5) : mode === 'custom' ? num(custom?.value) : num(mode);
+  if (count === null) count = isMobileLayout() ? 2 : 5;
+  return Math.max(1, Math.min(18, Math.round(count)));
+}
+
+function applyInventoryGridColumnSetting() {
+  const grid = $('inventoryGridView');
+  const custom = $('inventoryCustomCols');
+  const controls = $('inventoryGridControls');
+  if (!grid) return;
+  const mode = $('inventoryGridCols')?.value || '5';
+  const count = inventoryGridColumnCount();
+  if (isMobileLayout()) {
+    grid.style.gridTemplateColumns = `repeat(${Math.min(count, 2)}, minmax(0, 1fr))`;
+  } else if (mode === 'auto') {
+    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
+  } else {
+    grid.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
+  }
+  grid.dataset.density = count >= 12 ? 'ultra' : count >= 8 ? 'dense' : 'normal';
+  if (custom) custom.hidden = mode !== 'custom';
+  if (controls) controls.classList.toggle('active', inventoryViewMode === 'grid');
+}
+
 function syncViewMode() {
   const isGrid = viewMode === 'grid';
   const tableWrap = document.querySelector('.table-wrap');
@@ -2411,19 +5571,20 @@ function renderGrid(rows) {
   const grid = $('gridView');
   if (!grid) return;
   applyGridColumnSetting();
-  grid.innerHTML = rows.map(gridCardHtml).join('') || '<div class="grid-empty">No stickers match the active filters.</div>';
+  renderChunked(grid, rows, gridCardHtml, '<div class="grid-empty">No stickers match the active filters.</div>', updateRenderHint);
 }
 
 function renderResults() {
   const rows = displayedRows();
   syncViewMode();
   if (viewMode === 'grid') {
+    ++renderSequence;
     $('tbody').innerHTML = '';
     renderGrid(rows);
   } else {
     const grid = $('gridView');
     if (grid) grid.innerHTML = '';
-    $('tbody').innerHTML = rows.map(rowHtml).join('') || `<tr><td colspan="7" class="empty">No stickers match the active filters.</td></tr>`;
+    renderChunked($('tbody'), rows, rowHtml, `<tr><td colspan="7" class="empty">No stickers match the active filters.</td></tr>`, updateRenderHint);
   }
   $('visibleCount').textContent = `${rows.length.toLocaleString()}/${filtered.length.toLocaleString()}`;
   $('totalCount').textContent = records.length.toLocaleString();
@@ -2433,13 +5594,793 @@ function renderResults() {
   $('avgExpected').textContent = expected.length ? pct(expected.reduce((a,b) => a + b, 0) / expected.length, 0) : '-';
   $('avgEdge').textContent = edge.length ? fmt(edge.reduce((a,b) => a + b, 0) / edge.length, 2) : '-';
   $('scoredCount').textContent = `${scored}/${filtered.length}`;
-  const hint = $('renderHint');
-  if (hint) {
-    hint.textContent = rows.length < filtered.length
-      ? `Showing ${rows.length.toLocaleString()} of ${filtered.length.toLocaleString()} matched rows for smooth scrolling. Raise Rows or choose All only when needed.`
-      : `Showing all ${filtered.length.toLocaleString()} matched rows.`;
-  }
+  updateRenderHint();
   updateMobileFilterSummary();
+  renderPortfolioFocus();
+}
+
+function updateRenderHint() {
+  const hint = $('renderHint');
+  if (!hint) return;
+  const rows = displayedRows();
+  hint.textContent = rows.length < filtered.length
+    ? `Showing ${rows.length.toLocaleString()} of ${filtered.length.toLocaleString()} matched rows. Choose All gradual for the full set.`
+    : `Showing all ${filtered.length.toLocaleString()} matched rows with gradual rendering.`;
+}
+
+function nowIso() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function makeInventoryId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return `inv_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function usdFromTokens(value) {
+  const n = num(value);
+  return n === null ? '' : (n * USD_PER_TOKEN).toFixed(2);
+}
+
+function tokensFromUsd(value) {
+  const n = num(value);
+  return n === null ? '' : String(Math.round(n * TOKENS_PER_USD));
+}
+
+function normalizeCostFields(tokenValue, usdValue) {
+  const tokenText = String(tokenValue ?? '').trim();
+  const usdText = String(usdValue ?? '').trim();
+  const tokenNumber = num(tokenText);
+  const usdNumber = num(usdText);
+  return {
+    bought_tokens: tokenNumber !== null ? String(Math.round(tokenNumber)) : (usdNumber !== null ? tokensFromUsd(usdNumber) : ''),
+    bought_usd: usdNumber !== null ? Number(usdNumber).toFixed(2) : (tokenNumber !== null ? usdFromTokens(tokenNumber) : ''),
+  };
+}
+
+function syncCostInputs(tokensId, usdId, source) {
+  const tokenEl = $(tokensId);
+  const usdEl = $(usdId);
+  if (!tokenEl || !usdEl) return;
+  if (source === 'tokens') {
+    const next = usdFromTokens(tokenEl.value);
+    usdEl.value = tokenEl.value.trim() ? next : '';
+  } else {
+    const next = tokensFromUsd(usdEl.value);
+    tokenEl.value = usdEl.value.trim() ? next : '';
+  }
+}
+
+function currentCostForRecord(r) {
+  if (!r) return {bought_tokens:'', bought_usd:''};
+  return normalizeCostFields(hasNum(r.price_tokens) ? Math.round(Number(r.price_tokens)) : '', hasNum(r.usd_price) ? Number(r.usd_price).toFixed(2) : '');
+}
+
+function inventoryFields() {
+  return ['inventory_id','sticker_id','sticker','variant','category','steam_account','bought_tokens','bought_usd','acquired_at','notes','created_at','updated_at'];
+}
+
+function normalizeInventoryItem(item) {
+  const r = recordById.get(String(item.sticker_id || '')) || records.find(row => String(row.sticker).toLowerCase() === String(item.sticker || '').toLowerCase());
+  const stamp = nowIso();
+  const cost = normalizeCostFields(item.bought_tokens, item.bought_usd);
+  return {
+    inventory_id: String(item.inventory_id || makeInventoryId()),
+    sticker_id: String(item.sticker_id || r?.sticker_id || ''),
+    sticker: String(item.sticker || r?.sticker || ''),
+    variant: String(item.variant || r?.variant || ''),
+    category: String(item.category || r?.category || ''),
+    steam_account: String(item.steam_account || ''),
+    bought_tokens: cost.bought_tokens,
+    bought_usd: cost.bought_usd,
+    acquired_at: String(item.acquired_at || ''),
+    notes: String(item.notes || ''),
+    created_at: String(item.created_at || stamp),
+    updated_at: String(item.updated_at || stamp),
+  };
+}
+
+function inventoryRecord(item) {
+  return recordById.get(String(item.sticker_id || '')) || records.find(r => String(r.sticker).toLowerCase() === String(item.sticker || '').toLowerCase()) || null;
+}
+
+function resolveStickerInput(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return null;
+  return records.find(r => String(r.sticker_id).toLowerCase() === text)
+    || records.find(r => String(r.sticker).toLowerCase() === text)
+    || records.find(r => String(r.market_hash_name || '').toLowerCase() === text)
+    || records.find(r => String(r.sticker).toLowerCase().includes(text));
+}
+
+function resolveStickerBatchInput(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return {record:null, error:'missing sticker'};
+  const exact = records.find(r => String(r.sticker_id).toLowerCase() === text)
+    || records.find(r => String(r.sticker).toLowerCase() === text)
+    || records.find(r => String(r.market_hash_name || '').toLowerCase() === text);
+  if (exact) return {record:exact, error:''};
+  const matches = records.filter(r => String(r.sticker).toLowerCase().includes(text));
+  if (matches.length === 1) return {record:matches[0], error:''};
+  if (matches.length > 1) return {record:null, error:`ambiguous: ${matches.slice(0, 3).map(r => r.sticker).join(' | ')}`};
+  return {record:null, error:'not found'};
+}
+
+function inventoryFilteredItems() {
+  const query = String($('inventorySearch')?.value || '').trim().toLowerCase();
+  const account = String($('inventoryAccountFilter')?.value || '').trim();
+  const filteredItems = inventoryItems.filter(item => {
+    const r = inventoryRecord(item);
+    if (account && item.steam_account !== account) return false;
+    if (!query) return true;
+    const haystack = [
+      item.sticker, item.variant, item.category, item.steam_account, item.notes, item.acquired_at,
+      r?.sticker, r?.team, r?.team_name, r?.player_name, r?.verdict, r?.display_type,
+      item.bought_tokens, item.bought_usd, r?.price_tokens, r?.usd_price,
+    ].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+  return sortInventoryItems(filteredItems);
+}
+
+function inventoryDateValue(item) {
+  const value = Date.parse(item.acquired_at || item.updated_at || item.created_at || '');
+  return Number.isFinite(value) ? value : 0;
+}
+
+function inventorySortValue(item, key) {
+  const r = inventoryRecord(item);
+  const pnl = inventoryPnl(item, r);
+  if (key === 'name') return String(r?.sticker || item.sticker || '').toLowerCase();
+  if (key === 'account') return String(item.steam_account || '').toLowerCase();
+  if (key === 'date') return inventoryDateValue(item);
+  if (key === 'current') return pnl.currentUsd ?? -Infinity;
+  if (key === 'cost') return pnl.boughtUsd ?? -Infinity;
+  if (key === 'pnl') return pnl.usdAbs ?? -Infinity;
+  if (key === 'pnl_pct') return pnl.usdPct ?? pnl.tokenPct ?? -Infinity;
+  return 0;
+}
+
+function sortInventoryItems(items) {
+  const mode = inventorySortMode || 'date_desc';
+  const [key, dir] = mode.endsWith('_asc') ? [mode.replace(/_asc$/, ''), 'asc'] : [mode.replace(/_desc$/, ''), 'desc'];
+  return [...items].sort((a, b) => {
+    const av = inventorySortValue(a, key);
+    const bv = inventorySortValue(b, key);
+    let cmp = 0;
+    if (typeof av === 'string' || typeof bv === 'string') cmp = String(av).localeCompare(String(bv));
+    else cmp = Number(av) - Number(bv);
+    if (cmp === 0) cmp = String(a.sticker || '').localeCompare(String(b.sticker || ''));
+    return dir === 'asc' ? cmp : -cmp;
+  });
+}
+
+function updateInventoryAccountFilter() {
+  const select = $('inventoryAccountFilter');
+  const accounts = [...new Set(inventoryItems.map(item => item.steam_account).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  if (select) {
+    const current = select.value;
+    select.innerHTML = '<option value="">All accounts</option>' + accounts.map(account => `<option value="${esc(account)}">${esc(account)}</option>`).join('');
+    if (accounts.includes(current)) select.value = current;
+  }
+  const datalist = $('inventoryAccountOptions');
+  if (datalist) datalist.innerHTML = accounts.map(account => `<option value="${esc(account)}"></option>`).join('');
+}
+
+function pruneInventorySelection() {
+  const valid = new Set(inventoryItems.map(item => item.inventory_id));
+  selectedInventoryIds = new Set([...selectedInventoryIds].filter(id => valid.has(id)));
+}
+
+function updateInventorySelectionUi(visibleItems) {
+  pruneInventorySelection();
+  const count = selectedInventoryIds.size;
+  const visibleCount = visibleItems.filter(item => selectedInventoryIds.has(item.inventory_id)).length;
+  const text = count
+    ? `${count.toLocaleString()} selected${visibleCount !== count ? ` (${visibleCount.toLocaleString()} visible)` : ''}`
+    : '0 selected';
+  const label = $('inventorySelectedCount');
+  if (label) label.textContent = text;
+  const hasSelection = count > 0;
+  $('inventoryClearSelectionBtn')?.toggleAttribute('disabled', !hasSelection);
+  $('inventoryDeleteSelectedBtn')?.toggleAttribute('disabled', !hasSelection);
+  $('inventoryBulkApplyBtn')?.toggleAttribute('disabled', !hasSelection);
+  $('inventorySelectVisibleBtn')?.toggleAttribute('disabled', visibleItems.length === 0);
+}
+
+function inventoryPnl(item, r) {
+  const currentTokens = num(r?.price_tokens);
+  const currentUsd = num(r?.usd_price);
+  const boughtTokens = num(item.bought_tokens);
+  const boughtUsd = num(item.bought_usd);
+  const tokenPct = currentTokens !== null && boughtTokens !== null && boughtTokens > 0
+    ? ((currentTokens - boughtTokens) / boughtTokens) * 100
+    : null;
+  const usdPct = currentUsd !== null && boughtUsd !== null && boughtUsd > 0
+    ? ((currentUsd - boughtUsd) / boughtUsd) * 100
+    : null;
+  const usdAbs = currentUsd !== null && boughtUsd !== null && boughtUsd > 0 ? currentUsd - boughtUsd : null;
+  return {currentTokens, currentUsd, boughtTokens, boughtUsd, tokenPct, usdPct, usdAbs};
+}
+
+function pnlClass(value) {
+  const n = num(value);
+  if (n === null || Math.abs(n) < 0.05) return 'flat';
+  return n > 0 ? 'pos' : 'neg';
+}
+
+function boughtLabel(item) {
+  const parts = [];
+  if (num(item.bought_usd) !== null) parts.push(money(item.bought_usd));
+  if (num(item.bought_tokens) !== null) parts.push(`${tokens(item.bought_tokens)} tokens`);
+  return parts.length ? parts.join(' / ') : 'Not set';
+}
+
+function boughtShortLabel(item) {
+  if (num(item.bought_usd) !== null) return money(item.bought_usd);
+  if (num(item.bought_tokens) !== null) return `${tokens(item.bought_tokens)}t`;
+  return '-';
+}
+
+function inventoryItemListHtml(item, index) {
+  const r = inventoryRecord(item);
+  const pnl = inventoryPnl(item, r);
+  const image = r?.image_url || '';
+  const title = r?.sticker || item.sticker || 'Unknown sticker';
+  const market = r ? `${pct(r.expected_return_pct,0)} expected | ${esc(r.verdict || '-')}` : 'No market match';
+  const selected = selectedInventoryIds.has(item.inventory_id);
+  const pnlValue = pnl.usdPct !== null ? `${pnl.usdAbs >= 0 ? '+' : ''}${money(pnl.usdAbs)} (${pnl.usdPct >= 0 ? '+' : ''}${fmt(pnl.usdPct,1)}%)`
+    : pnl.tokenPct !== null ? `${pnl.tokenPct >= 0 ? '+' : ''}${fmt(pnl.tokenPct,1)}% tokens`
+    : '-';
+  return `<tr class="${selected ? 'inventory-selected-row' : ''} ${rarityClass(r || item)}" ${rarityStyleAttr(r || item)}>
+    <td data-label="Select" class="inventory-select-cell"><input class="inventory-select" type="checkbox" data-select-inventory="${esc(item.inventory_id)}" ${selected ? 'checked' : ''} aria-label="Select ${esc(title)}" /></td>
+    <td data-label="Sticker"><div class="inventory-sticker-cell"><img src="${esc(image)}" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'" /><div><div class="inventory-item-title">#${index + 1} ${esc(title)}</div><div class="inventory-item-sub">${esc(r?.variant || item.variant || '-')} | ${esc(r?.team || r?.player_name || r?.team_name || '')}</div></div></div></td>
+    <td data-label="Account">${esc(item.steam_account || '-')}</td>
+    <td data-label="Bought">${esc(boughtLabel(item))}<div class="inventory-item-sub">${esc(item.acquired_at || '')}</div></td>
+    <td data-label="Current">${money(pnl.currentUsd)}<div class="inventory-item-sub">${tokens(pnl.currentTokens)} tokens</div></td>
+    <td data-label="P/L"><span class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlValue)}</span></td>
+    <td data-label="Market">${market}<div class="inventory-item-sub">${marketCounterHtml(r, 'mini')} | Low ${tokens(r?.hist_min)} | High ${tokens(r?.hist_max)}</div></td>
+    <td data-label="Actions"><div class="inventory-actions"><button class="mini-btn" type="button" data-inventory-details="${esc(item.inventory_id)}">Details</button><button class="mini-btn" type="button" data-edit-inventory="${esc(item.inventory_id)}">Edit</button><button class="mini-btn danger" type="button" data-delete-inventory="${esc(item.inventory_id)}">Delete</button></div></td>
+  </tr>`;
+}
+
+function inventoryItemCardHtml(item, index) {
+  const r = inventoryRecord(item);
+  const pnl = inventoryPnl(item, r);
+  const image = r?.image_url || '';
+  const title = r?.sticker || item.sticker || 'Unknown sticker';
+  const selected = selectedInventoryIds.has(item.inventory_id);
+  const pnlText = pnl.usdPct !== null ? `${pnl.usdPct >= 0 ? '+' : ''}${fmt(pnl.usdPct,1)}%` : pnl.tokenPct !== null ? `${pnl.tokenPct >= 0 ? '+' : ''}${fmt(pnl.tokenPct,1)}%` : '-';
+  const pnlCls = pnlClass(pnl.usdPct ?? pnl.tokenPct);
+  const account = item.steam_account || 'No account';
+  const bought = boughtLabel(item);
+  return `<div class="inventory-card ${rarityClass(r || item)} ${selected ? 'inventory-selected-card' : ''}" ${rarityStyleAttr(r || item)} data-inventory-card="${esc(item.inventory_id)}" role="button" tabindex="0" aria-label="Open details for ${esc(title)}">
+    <label class="inventory-card-select" title="Select item"><input class="inventory-select" type="checkbox" data-select-inventory="${esc(item.inventory_id)}" ${selected ? 'checked' : ''} /></label>
+    <div class="inventory-card-art">
+      <img src="${esc(image)}" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'" alt="${esc(title)}" />
+    </div>
+    <div>
+      <div class="inventory-card-title" title="${esc(title)}">#${index + 1} ${esc(title)}</div>
+      <div class="inventory-card-meta"><span>${esc(account)}</span><span>|</span><span>${esc(item.acquired_at || 'No date')}</span></div>
+      <div class="inventory-card-market">
+        <span class="inventory-current-price" title="${esc(metricDescriptions.Current)}">${money(pnl.currentUsd)}</span>
+        <span class="inventory-cost-pill" title="${esc(`Known cost: ${bought}`)}"><span>Cost</span><b>${esc(boughtShortLabel(item))}</b></span>
+        <span class="inventory-pnl-pill inventory-pnl ${pnlCls}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlText)}</span>
+      </div>
+      <div class="inventory-card-counter">${marketCounterHtml(r, 'mini')}</div>
+    </div>
+    <div class="inventory-card-subrow">
+      <span title="${esc(bought)}">Bought ${esc(bought)}</span>
+      <span title="Low ${tokens(r?.hist_min)} | High ${tokens(r?.hist_max)}">L ${tokens(r?.hist_min)} / H ${tokens(r?.hist_max)}</span>
+    </div>
+    <div class="inventory-card-actions"><button class="mini-btn" type="button" data-inventory-details="${esc(item.inventory_id)}">Details</button><button class="mini-btn" type="button" data-edit-inventory="${esc(item.inventory_id)}">Edit</button><button class="mini-btn danger" type="button" data-delete-inventory="${esc(item.inventory_id)}">Delete</button></div>
+  </div>`;
+}
+
+function portfolioKey(r) {
+  return String(r?.portfolio_group || r?.team_name || r?.team || r?.player_name || r?.sticker || '').trim() || 'Unknown';
+}
+
+function goodBuyCandidate(r) {
+  const verdictRank = verdictOrder[r.verdict] ?? 99;
+  return verdictRank <= 4 && String(r.suggested_size || '') !== '0' && Number(r.priority_score || 0) > 0;
+}
+
+function normalizedVariant(r) {
+  const raw = String(r?.variant || '').trim();
+  const lower = raw.toLowerCase();
+  if (lower.includes('gold')) return 'Gold';
+  if (lower.includes('holo')) return 'Holo';
+  if (lower.includes('foil')) return 'Foil';
+  if (lower.includes('paper')) return 'Paper';
+  return raw || 'Paper';
+}
+
+function computeSignalSets() {
+  const ranked = records
+    .filter(r => ['Holo', 'Foil'].includes(normalizedVariant(r)) && csgoskinsTrueEdgePct(r) !== null)
+    .sort((a, b) => (csgoskinsTrueEdgePct(b) ?? -Infinity) - (csgoskinsTrueEdgePct(a) ?? -Infinity));
+  const limit = Math.max(12, Math.ceil(ranked.length * 0.08));
+  topTrueEdgeIds = new Set(
+    ranked
+      .slice(0, limit)
+      .filter(r => (csgoskinsTrueEdgePct(r) ?? -Infinity) > 0)
+      .map(favoriteId)
+  );
+}
+
+function isTopTrueEdge(r) {
+  return topTrueEdgeIds.has(favoriteId(r));
+}
+
+function signalTags(r) {
+  const out = [];
+  const trueEdge = csgoskinsTrueEdgePct(r);
+  const currentEdge = csgoskinsDiscountPct(r);
+  const lowGap = num(r.low_gap_pct);
+  if (isFavorite(r)) out.push({cls:'favorite', label:'Favorite', title:'Bookmarked sticker'});
+  if (isTopTrueEdge(r)) out.push({cls:'edge', label:'Top 2P edge', title:'Among the strongest CSGOSkins prices versus Steam historical low'});
+  if (trueEdge !== null && trueEdge > 0) out.push({cls:'edge', label:`Below low ${fmt(trueEdge,0)}%`, title:'Csgoskins is below the collected Steam historical low'});
+  else if (currentEdge !== null && currentEdge > 10) out.push({cls:'watch', label:`2P cheaper ${fmt(currentEdge,0)}%`, title:'Csgoskins is cheaper than current Steam price, but not below the collected Steam low'});
+  if (isReleaseLow(r)) out.push({cls:'low', label:'Steam low', title:'Current Steam-side price is at the collected low'});
+  else if (lowGap !== null && lowGap <= 5) out.push({cls:'low', label:`Near low +${fmt(lowGap,1)}%`, title:'Current Steam-side price is within 5% of the collected low'});
+  if (num(r.discount_from_high_pct) !== null && Number(r.discount_from_high_pct) >= 80) out.push({cls:'discount', label:'Deep discount', title:'Current price is at least 80% below the collected high'});
+  return out.slice(0, 5);
+}
+
+function signalTagsHtml(r, mode='row') {
+  const tags = signalTags(r);
+  if (!tags.length) return '';
+  return `<div class="signal-tags ${mode}">${tags.map(tag => `<span class="signal-tag ${tag.cls}" title="${esc(tag.title)}">${esc(tag.label)}</span>`).join('')}</div>`;
+}
+
+function renderPortfolioFocus() {
+  const box = $('portfolioFocus');
+  if (!box) return;
+  const groupCounts = new Map();
+  const heldIds = new Map();
+  inventoryItems.forEach(item => {
+    const r = inventoryRecord(item);
+    if (!r) return;
+    const key = portfolioKey(r);
+    groupCounts.set(key, (groupCounts.get(key) || 0) + 1);
+    heldIds.set(String(r.sticker_id), (heldIds.get(String(r.sticker_id)) || 0) + 1);
+  });
+  const saturated = [...groupCounts.entries()].filter(([, count]) => count >= 2).sort((a, b) => b[1] - a[1]).slice(0, 4);
+
+  const activeVariants = selectedVariants();
+  const activeFilterIds = ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','scoredFilter'];
+  const anyFilterActive = activeFilterIds.some(id => String($(id)?.value || '').trim());
+  const variants = activeVariants.length ? activeVariants : ALL_VARIANTS;
+  const sourceRows = anyFilterActive ? filtered : records;
+  const sortedCandidate = (variant) => sourceRows
+    .filter(r => normalizedVariant(r) === variant)
+    .filter(goodBuyCandidate)
+    .map(r => ({r, exposure:groupCounts.get(portfolioKey(r)) || 0, held:heldIds.get(String(r.sticker_id)) || 0}))
+    .filter(item => item.held === 0)
+    .sort((a, b) => (a.exposure - b.exposure) || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999)))
+    .slice(0, 5);
+
+  $('portfolioFocusHint').textContent = inventoryItems.length
+    ? saturated.length
+      ? `${inventoryItems.length} inventory items tracked. Avoid adding more: ${saturated.map(([key, count]) => `${key} (${count})`).join(', ')}.`
+      : `${inventoryItems.length} inventory items tracked; each finish favors groups with less exposure.`
+    : activeVariants.length
+      ? `Showing ${activeVariants.join(', ')} recommendations from the active filters.`
+      : 'Split by Paper, Foil, Holo and Gold from the active filters.';
+
+  const sections = variants.map(variant => ({variant, items:sortedCandidate(variant)}));
+  if (!sections.some(section => section.items.length)) {
+    box.innerHTML = '<div class="focus-empty">No underexposed buy candidates after the current filters. That usually means your inventory already overlaps the stronger candidates, the selected finish is too extended, or the model is asking you to wait.</div>';
+    return;
+  }
+
+  box.innerHTML = sections.map(({variant, items}) => {
+    const shellRecord = records.find(r => normalizedVariant(r) === variant) || {variant};
+    const empty = `<div class="focus-empty small">No ${esc(variant)} candidate in the active filter set.</div>`;
+    const cards = items.map(({r, exposure}) => {
+      const vcolor = colorForVerdict(r.verdict);
+      const reason = exposure
+        ? `${exposure} held in ${esc(portfolioKey(r))}; size carefully.`
+        : `Clean diversification against your current inventory.`;
+      return `<button class="focus-card ${rarityClass(r)}" ${rarityStyleAttr(r)} type="button" data-id="${esc(r.sticker_id || r.sticker)}">
+        <img src="${esc(r.image_url || '')}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" />
+        <span class="focus-card-body">
+          <span class="focus-title"><b>${esc(r.sticker)}</b><span class="focus-rank">#${esc(r.priority_rank)}</span></span>
+          <span class="focus-note">${reason}</span>
+          <span class="focus-meta"><span class="focus-chip" style="border-color:${vcolor}">${esc(r.verdict || '-')}</span><span class="focus-chip">${money(r.usd_price)}</span><span class="focus-chip">${pct(r.expected_return_pct,0)} exp.</span>${marketCounterHtml(r, 'mini')}</span>
+        </span>
+      </button>`;
+    }).join('');
+    return `<section class="recommendation-group ${rarityClass(shellRecord)}" ${rarityStyleAttr(shellRecord)}>
+      <div class="recommendation-head"><span>${esc(variant)}</span><b>${items.length ? `${items.length} focus` : 'Waiting'}</b></div>
+      <div class="recommendation-cards">${items.length ? cards : empty}</div>
+    </section>`;
+  }).join('');
+}
+
+function renderInventory() {
+  updateInventoryAccountFilter();
+  const visibleItems = inventoryFilteredItems();
+  const grid = $('inventoryGridView');
+  const tbody = $('inventoryTbody');
+  applyInventoryGridColumnSetting();
+  const emptyText = inventoryItems.length ? 'No inventory items match the active inventory filters.' : 'No inventory items yet. Add each physical sticker as a separate row.';
+  if (grid) grid.innerHTML = visibleItems.length ? visibleItems.map(inventoryItemCardHtml).join('') : `<div class="inventory-empty">${emptyText}</div>`;
+  if (tbody) tbody.innerHTML = visibleItems.length ? visibleItems.map(inventoryItemListHtml).join('') : `<tr><td colspan="8" class="empty">${emptyText}</td></tr>`;
+
+  let currentValue = 0;
+  let knownCost = 0;
+  let knownPnl = 0;
+  let visibleCurrentValue = 0;
+  let visibleKnownCost = 0;
+  let visibleKnownPnl = 0;
+  inventoryItems.forEach(item => {
+    const r = inventoryRecord(item);
+    const pnl = inventoryPnl(item, r);
+    if (pnl.currentUsd !== null) currentValue += pnl.currentUsd;
+    if (pnl.boughtUsd !== null) {
+      knownCost += pnl.boughtUsd;
+      if (pnl.currentUsd !== null) knownPnl += pnl.currentUsd - pnl.boughtUsd;
+    }
+  });
+  visibleItems.forEach(item => {
+    const r = inventoryRecord(item);
+    const pnl = inventoryPnl(item, r);
+    if (pnl.currentUsd !== null) visibleCurrentValue += pnl.currentUsd;
+    if (pnl.boughtUsd !== null) {
+      visibleKnownCost += pnl.boughtUsd;
+      if (pnl.currentUsd !== null) visibleKnownPnl += pnl.currentUsd - pnl.boughtUsd;
+    }
+  });
+  $('inventoryCount').textContent = inventoryItems.length.toLocaleString();
+  if ($('inventoryTopCount')) $('inventoryTopCount').textContent = `${inventoryItems.length.toLocaleString()} item${inventoryItems.length === 1 ? '' : 's'}`;
+  $('inventoryCurrentValue').textContent = money(currentValue);
+  $('inventoryKnownCost').textContent = money(knownCost);
+  $('inventoryPnl').textContent = `${knownPnl >= 0 ? '+' : ''}${money(knownPnl)}`;
+  $('inventoryPnl').className = `inventory-pnl ${pnlClass(knownPnl)}`;
+  if ($('inventoryDrawerCount')) $('inventoryDrawerCount').textContent = visibleItems.length.toLocaleString();
+  if ($('inventoryDrawerCurrentValue')) $('inventoryDrawerCurrentValue').textContent = money(visibleCurrentValue);
+  if ($('inventoryDrawerKnownCost')) $('inventoryDrawerKnownCost').textContent = money(visibleKnownCost);
+  if ($('inventoryDrawerPnl')) {
+    $('inventoryDrawerPnl').textContent = `${visibleKnownPnl >= 0 ? '+' : ''}${money(visibleKnownPnl)}`;
+    $('inventoryDrawerPnl').className = `inventory-pnl ${pnlClass(visibleKnownPnl)}`;
+  }
+  $('inventoryGridView')?.toggleAttribute('hidden', inventoryViewMode !== 'grid');
+  $('inventoryListView')?.toggleAttribute('hidden', inventoryViewMode !== 'list');
+  $('inventoryGridBtn')?.classList.toggle('active', inventoryViewMode === 'grid');
+  $('inventoryListBtn')?.classList.toggle('active', inventoryViewMode === 'list');
+  $('inventoryGridBtn')?.setAttribute('aria-pressed', String(inventoryViewMode === 'grid'));
+  $('inventoryListBtn')?.setAttribute('aria-pressed', String(inventoryViewMode === 'list'));
+  updateInventorySelectionUi(visibleItems);
+  renderPortfolioFocus();
+}
+
+function setInventoryStatus(text, cls='') {
+  const el = $('inventoryStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = `inventory-status ${cls}`;
+}
+
+async function loadInventory() {
+  try {
+    const response = await fetch('/api/inventory', {cache:'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    inventoryItems = (payload.items || []).map(normalizeInventoryItem);
+    inventoryApiOnline = true;
+    setInventoryStatus(`CSV connected: ${payload.path || 'Inventory/sticker_inventory.csv'}`, 'ok');
+  } catch (error) {
+    inventoryApiOnline = false;
+    const fallback = localStorage.getItem('cs2StickerInventory');
+    inventoryItems = fallback ? JSON.parse(fallback).map(normalizeInventoryItem) : [];
+    setInventoryStatus('Local browser mode. Run inventory_server.py to save CSV.', 'warn');
+  }
+  renderInventory();
+}
+
+async function persistInventory() {
+  inventoryItems = inventoryItems.map(normalizeInventoryItem);
+  localStorage.setItem('cs2StickerInventory', JSON.stringify(inventoryItems));
+  if (!inventoryApiOnline) {
+    setInventoryStatus('Saved in browser only. Start inventory_server.py for CSV persistence.', 'warn');
+    renderInventory();
+    return;
+  }
+  try {
+    const response = await fetch('/api/inventory', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({items:inventoryItems})
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    inventoryItems = (payload.items || []).map(normalizeInventoryItem);
+    setInventoryStatus(`Saved to ${payload.path || 'Inventory/sticker_inventory.csv'}`, 'ok');
+  } catch (error) {
+    inventoryApiOnline = false;
+    setInventoryStatus(`CSV save failed; kept browser copy. ${error.message}`, 'error');
+  }
+  renderInventory();
+}
+
+function clearInventoryForm() {
+  ['inventoryId','inventoryStickerInput','inventoryAccount','inventoryBoughtTokens','inventoryBoughtUsd','inventoryAcquiredAt','inventoryNotes']
+    .forEach(id => { const el = $(id); if (el) el.value = ''; });
+  if ($('inventoryQuantity')) {
+    $('inventoryQuantity').value = '1';
+    $('inventoryQuantity').disabled = false;
+  }
+  $('inventorySubmit').textContent = 'Add Item';
+}
+
+function fillInventoryForm(item) {
+  closeInventoryDrawer();
+  $('inventoryId').value = item.inventory_id || '';
+  $('inventoryStickerInput').value = item.sticker || '';
+  if ($('inventoryQuantity')) {
+    $('inventoryQuantity').value = '1';
+    $('inventoryQuantity').disabled = true;
+  }
+  $('inventoryAccount').value = item.steam_account || '';
+  $('inventoryBoughtTokens').value = item.bought_tokens || '';
+  $('inventoryBoughtUsd').value = item.bought_usd || '';
+  $('inventoryAcquiredAt').value = item.acquired_at || '';
+  $('inventoryNotes').value = item.notes || '';
+  $('inventorySubmit').textContent = 'Update Item';
+  $('inventoryShell')?.setAttribute('open', '');
+  $('inventoryAddPanel')?.setAttribute('open', '');
+  $('inventoryStickerInput')?.focus({preventScroll:false});
+}
+
+function startInventoryAdd(stickerId) {
+  const r = recordById.get(String(stickerId));
+  if (!r) return;
+  closeInventoryDrawer();
+  clearInventoryForm();
+  const cost = currentCostForRecord(r);
+  $('inventoryStickerInput').value = r.sticker;
+  $('inventoryBoughtTokens').value = cost.bought_tokens;
+  $('inventoryBoughtUsd').value = cost.bought_usd;
+  $('inventoryAcquiredAt').valueAsDate = new Date();
+  $('inventoryShell')?.setAttribute('open', '');
+  $('inventoryAddPanel')?.setAttribute('open', '');
+  $('inventoryAccount')?.focus({preventScroll:false});
+}
+
+function submitInventoryForm(event) {
+  event.preventDefault();
+  const r = resolveStickerInput($('inventoryStickerInput').value);
+  if (!r) {
+    setInventoryStatus('Sticker not found. Use the exact dashboard sticker name.', 'error');
+    return;
+  }
+  const existingId = $('inventoryId').value;
+  const existing = existingId ? inventoryItems.find(item => item.inventory_id === existingId) : null;
+  const stamp = nowIso();
+  const cost = normalizeCostFields($('inventoryBoughtTokens').value, $('inventoryBoughtUsd').value);
+  const baseItem = {
+    sticker_id: r.sticker_id,
+    sticker: r.sticker,
+    variant: r.variant,
+    category: r.category,
+    steam_account: $('inventoryAccount').value.trim(),
+    bought_tokens: cost.bought_tokens,
+    bought_usd: cost.bought_usd,
+    acquired_at: $('inventoryAcquiredAt').value,
+    notes: $('inventoryNotes').value.trim(),
+    updated_at: stamp,
+  };
+  if (existingId) {
+    const item = normalizeInventoryItem({
+      ...baseItem,
+      inventory_id: existingId,
+      created_at: existing?.created_at || stamp,
+    });
+    inventoryItems = inventoryItems.map(row => row.inventory_id === existingId ? item : row);
+  } else {
+    const qty = Math.max(1, Math.min(500, Math.floor(num($('inventoryQuantity')?.value) || 1)));
+    const newItems = Array.from({length:qty}, () => normalizeInventoryItem({
+      ...baseItem,
+      inventory_id: makeInventoryId(),
+      created_at: stamp,
+    }));
+    inventoryItems = [...newItems, ...inventoryItems];
+  }
+  clearInventoryForm();
+  persistInventory();
+}
+
+function parseDelimitedLine(line) {
+  const delimiter = line.includes('\t') && !line.includes(',') ? '\t' : ',';
+  const out = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (ch === delimiter && !quoted) {
+      out.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  out.push(current.trim());
+  return out;
+}
+
+function addInventoryBatch() {
+  const text = String($('inventoryBatchText')?.value || '').trim();
+  if (!text) {
+    setInventoryStatus('Batch add needs at least one row.', 'error');
+    return;
+  }
+  const defaultAccount = String($('inventoryBatchAccount')?.value || '').trim();
+  const defaultDate = $('inventoryBatchDate')?.value || '';
+  const useCurrent = Boolean($('inventoryBatchUseCurrentPrice')?.checked);
+  const stamp = nowIso();
+  const newItems = [];
+  const errors = [];
+  text.split(/\r?\n/).forEach((rawLine, idx) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    const cols = parseDelimitedLine(line);
+    if (idx === 0 && String(cols[0] || '').toLowerCase() === 'sticker') return;
+    const [stickerName, qtyText, accountText, tokenText, usdText, dateText, ...noteParts] = cols;
+    const resolved = resolveStickerBatchInput(stickerName);
+    if (!resolved.record) {
+      errors.push(`line ${idx + 1}: ${resolved.error}`);
+      return;
+    }
+    const qty = Math.max(1, Math.min(500, Math.floor(num(qtyText) || 1)));
+    let cost = normalizeCostFields(tokenText, usdText);
+    if (useCurrent && !cost.bought_tokens && !cost.bought_usd) cost = currentCostForRecord(resolved.record);
+    const note = noteParts.join(', ').trim();
+    for (let i = 0; i < qty; i++) {
+      newItems.push(normalizeInventoryItem({
+        inventory_id: makeInventoryId(),
+        sticker_id: resolved.record.sticker_id,
+        sticker: resolved.record.sticker,
+        variant: resolved.record.variant,
+        category: resolved.record.category,
+        steam_account: String(accountText || defaultAccount || '').trim(),
+        bought_tokens: cost.bought_tokens,
+        bought_usd: cost.bought_usd,
+        acquired_at: String(dateText || defaultDate || '').trim(),
+        notes: note,
+        created_at: stamp,
+        updated_at: stamp,
+      }));
+    }
+  });
+  if (!newItems.length) {
+    setInventoryStatus(`No batch rows were added. ${errors.slice(0, 3).join(' | ')}`, 'error');
+    return;
+  }
+  inventoryItems = [...newItems, ...inventoryItems];
+  $('inventoryBatchText').value = errors.length ? text : '';
+  setInventoryStatus(`Added ${newItems.length.toLocaleString()} inventory rows${errors.length ? `; ${errors.length} row(s) skipped.` : '.'}`, errors.length ? 'warn' : 'ok');
+  persistInventory();
+}
+
+function handleInventorySelectionChange(event) {
+  const select = event.target.closest('[data-select-inventory]');
+  if (!select) return;
+  const id = select.dataset.selectInventory;
+  if (select.checked) selectedInventoryIds.add(id);
+  else selectedInventoryIds.delete(id);
+  renderInventory();
+}
+
+function selectVisibleInventory() {
+  inventoryFilteredItems().forEach(item => selectedInventoryIds.add(item.inventory_id));
+  renderInventory();
+}
+
+function clearInventorySelection() {
+  selectedInventoryIds.clear();
+  renderInventory();
+}
+
+function deleteSelectedInventory() {
+  const ids = [...selectedInventoryIds];
+  if (!ids.length) {
+    setInventoryStatus('Select inventory rows before deleting.', 'warn');
+    return;
+  }
+  if (!confirm(`Delete ${ids.length.toLocaleString()} selected inventory item(s)?`)) return;
+  const idSet = new Set(ids);
+  inventoryItems = inventoryItems.filter(item => !idSet.has(item.inventory_id));
+  selectedInventoryIds.clear();
+  persistInventory();
+}
+
+function applyInventoryBulkEdit() {
+  const ids = [...selectedInventoryIds];
+  if (!ids.length) {
+    setInventoryStatus('Select inventory rows before applying a batch edit.', 'warn');
+    return;
+  }
+  const account = String($('inventoryBulkAccount')?.value || '').trim();
+  const date = $('inventoryBulkDate')?.value || '';
+  const note = String($('inventoryBulkNotes')?.value || '').trim();
+  const noteMode = $('inventoryBulkNotesMode')?.value || 'append';
+  const rawTokens = String($('inventoryBulkBoughtTokens')?.value || '').trim();
+  const rawUsd = String($('inventoryBulkBoughtUsd')?.value || '').trim();
+  const hasCost = Boolean(rawTokens || rawUsd);
+  if (!account && !date && !note && !hasCost) {
+    setInventoryStatus('Batch edit has no filled fields to apply.', 'warn');
+    return;
+  }
+  const cost = normalizeCostFields(rawTokens, rawUsd);
+  const stamp = nowIso();
+  const idSet = new Set(ids);
+  inventoryItems = inventoryItems.map(item => {
+    if (!idSet.has(item.inventory_id)) return item;
+    const next = {...item, updated_at:stamp};
+    if (account) next.steam_account = account;
+    if (date) next.acquired_at = date;
+    if (hasCost) {
+      next.bought_tokens = cost.bought_tokens;
+      next.bought_usd = cost.bought_usd;
+    }
+    if (note) {
+      next.notes = noteMode === 'replace' || !next.notes ? note : `${next.notes}; ${note}`;
+    }
+    return normalizeInventoryItem(next);
+  });
+  ['inventoryBulkAccount','inventoryBulkBoughtTokens','inventoryBulkBoughtUsd','inventoryBulkDate','inventoryBulkNotes']
+    .forEach(id => { const el = $(id); if (el) el.value = ''; });
+  persistInventory();
+}
+
+function handleInventoryClick(event) {
+  const detail = event.target.closest('[data-inventory-details]');
+  const edit = event.target.closest('[data-edit-inventory]');
+  const del = event.target.closest('[data-delete-inventory]');
+  const card = event.target.closest('.inventory-card[data-inventory-card]');
+  if (detail) {
+    const item = inventoryItems.find(row => row.inventory_id === detail.dataset.inventoryDetails);
+    const r = item ? inventoryRecord(item) : null;
+    if (r) openStickerModal(r.sticker_id, item.inventory_id);
+  } else if (edit) {
+    const item = inventoryItems.find(row => row.inventory_id === edit.dataset.editInventory);
+    if (item) fillInventoryForm(item);
+  } else if (del) {
+    const item = inventoryItems.find(row => row.inventory_id === del.dataset.deleteInventory);
+    if (item && confirm(`Delete ${item.sticker} from inventory?`)) {
+      inventoryItems = inventoryItems.filter(row => row.inventory_id !== item.inventory_id);
+      persistInventory();
+    }
+  } else if (card && !event.target.closest('button, a, input, label, select, textarea')) {
+    const item = inventoryItems.find(row => row.inventory_id === card.dataset.inventoryCard);
+    const r = item ? inventoryRecord(item) : null;
+    if (r) openStickerModal(r.sticker_id, item.inventory_id);
+  }
+}
+
+function inventoryCsvText() {
+  const fields = inventoryFields();
+  const quote = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  return [fields.join(','), ...inventoryItems.map(item => fields.map(field => quote(item[field])).join(','))].join('\n');
+}
+
+function downloadInventoryCsv() {
+  const blob = new Blob([inventoryCsvText()], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'sticker_inventory.csv';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function scale(v, a, b, c, d) {
@@ -2609,17 +6550,19 @@ function setupFilterPanel() {
   }
   window.addEventListener('resize', () => {
     if (!isMobileLayout()) panel.setAttribute('open', '');
+    applyInventoryGridColumnSetting();
+    applyGridColumnSetting();
   }, {passive:true});
 }
 
 function updateMobileFilterSummary() {
   const summary = document.getElementById('mobileFilterSummary');
   if (!summary) return;
-  const ids = ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','scoredFilter'];
+  const ids = ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','sortPreset','scoredFilter'];
   const active = ids.reduce((count, id) => {
     const el = document.getElementById(id);
     return count + (el && String(el.value || '').trim() ? 1 : 0);
-  }, 0);
+  }, selectedVariants().length ? 1 : 0);
   summary.textContent = active
     ? `${active} active - ${filtered.length.toLocaleString()} matches`
     : 'Tap to refine';
@@ -2630,12 +6573,31 @@ function setViewMode(mode) {
   renderResults();
 }
 
-function openStickerModal(id) {
+function openInventoryDrawer() {
+  const drawer = $('inventoryDrawer');
+  if (!drawer) return;
+  drawer.hidden = false;
+  document.body.style.overflow = 'hidden';
+  renderInventory();
+  $('inventoryDrawerClose')?.focus({preventScroll:true});
+}
+
+function closeInventoryDrawer() {
+  const drawer = $('inventoryDrawer');
+  if (!drawer || drawer.hidden) return;
+  drawer.hidden = true;
+  if ($('detailModal')?.hidden !== false) document.body.style.overflow = '';
+}
+
+function openStickerModal(id, inventoryId=null) {
   const r = recordById.get(String(id));
   const modal = $('detailModal');
   const content = $('modalContent');
   if (!r || !modal || !content) return;
-  content.innerHTML = stickerDetailsHtml(r);
+  activeStickerModalId = String(id);
+  activeInventoryModalId = inventoryId ? String(inventoryId) : null;
+  const inventoryItem = activeInventoryModalId ? inventoryItems.find(row => row.inventory_id === activeInventoryModalId) : null;
+  content.innerHTML = stickerDetailsHtml(r, inventoryItem || null);
   modal.hidden = false;
   document.body.style.overflow = 'hidden';
   if (!modalHistoryOpen && window.history && window.history.pushState) {
@@ -2649,7 +6611,9 @@ function closeStickerModal(fromPop=false) {
   const modal = $('detailModal');
   if (!modal || modal.hidden) return;
   modal.hidden = true;
-  document.body.style.overflow = '';
+  if ($('inventoryDrawer')?.hidden !== false) document.body.style.overflow = '';
+  activeStickerModalId = null;
+  activeInventoryModalId = null;
   const content = $('modalContent');
   if (content) content.innerHTML = '';
   if (modalHistoryOpen) {
@@ -2662,25 +6626,105 @@ function setupDetailModal() {
   const grid = $('gridView');
   if (grid) {
     grid.addEventListener('click', event => {
+      if (event.target && event.target.closest && event.target.closest('[data-favorite]')) return;
+      if (event.target && event.target.closest && event.target.closest('[data-fetch-price]')) return;
       const card = event.target && event.target.closest ? event.target.closest('.grid-card') : null;
       if (card) openStickerModal(card.dataset.id);
     });
+    grid.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (event.target && event.target.closest && event.target.closest('[data-favorite]')) return;
+      if (event.target && event.target.closest && event.target.closest('[data-fetch-price]')) return;
+      const card = event.target && event.target.closest ? event.target.closest('.grid-card') : null;
+      if (card) {
+        event.preventDefault();
+        openStickerModal(card.dataset.id);
+      }
+    });
   }
+  $('portfolioFocus')?.addEventListener('click', event => {
+    const card = event.target && event.target.closest ? event.target.closest('.focus-card[data-id]') : null;
+    if (card) openStickerModal(card.dataset.id);
+  });
+  $('modalContent')?.addEventListener('click', event => {
+    const add = event.target && event.target.closest ? event.target.closest('[data-add-inventory]') : null;
+    if (add) {
+      const stickerId = add.dataset.addInventory;
+      closeStickerModal();
+      startInventoryAdd(stickerId);
+    }
+  });
   $('modalClose')?.addEventListener('click', closeStickerModal);
   document.querySelector('[data-close-modal]')?.addEventListener('click', closeStickerModal);
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') closeStickerModal();
+    if (event.key === 'Escape') {
+      closeStickerModal();
+      closeInventoryDrawer();
+    }
   });
   window.addEventListener('popstate', () => {
     closeStickerModal(true);
   });
 }
 
+function setupInventoryDrawer() {
+  $('inventoryDrawerBtn')?.addEventListener('click', openInventoryDrawer);
+  $('inventoryDrawerInlineBtn')?.addEventListener('click', openInventoryDrawer);
+  $('inventoryDrawerClose')?.addEventListener('click', closeInventoryDrawer);
+  document.querySelector('[data-close-inventory-drawer]')?.addEventListener('click', closeInventoryDrawer);
+}
+
+function setupFavorites() {
+  document.addEventListener('click', event => {
+    const button = event.target && event.target.closest ? event.target.closest('[data-favorite]') : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = String(button.dataset.favorite || '');
+    if (!id) return;
+    if (favoriteIds.has(id)) favoriteIds.delete(id);
+    else favoriteIds.add(id);
+    saveFavorites();
+    applyFiltersPreservingScroll();
+  });
+}
+
+function setupPriceFetch() {
+  $('refreshFavoritePricesBtn')?.addEventListener('click', () => {
+    const favoriteRows = records.filter(r => isFavorite(r) && csgoskinsFetchable(r));
+    fetchCsgoskinsPricesFor(favoriteRows, 'favorite stickers');
+  });
+  document.addEventListener('click', event => {
+    const button = event.target && event.target.closest ? event.target.closest('[data-fetch-price]') : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const r = recordForFetchId(button.dataset.fetchPrice);
+    if (!r) {
+      setPriceFetchStatus('Could not find that sticker in the loaded dashboard data.', 'error');
+      return;
+    }
+    fetchCsgoskinsPricesFor([r], r.sticker || 'selected sticker');
+  });
+}
+
 function wire() {
+  loadFavorites();
+  computeSignalSets();
   makeOptions();
   setupFilterPanel();
-  ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','rowLimit','scoredFilter']
+  if ($('inventoryBatchDate') && !$('inventoryBatchDate').value) $('inventoryBatchDate').valueAsDate = new Date();
+  ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','sortPreset','rowLimit','scoredFilter']
     .forEach(id => $(id).addEventListener('input', applyFilters));
+  $('variantFilterButton')?.addEventListener('click', toggleVariantMenu);
+  variantCheckboxes().forEach(input => input.addEventListener('change', () => {
+    syncVariantFilterLabel();
+    applyFilters();
+  }));
+  document.addEventListener('click', event => {
+    const shell = $('variantFilter');
+    if (shell && !shell.contains(event.target)) closeVariantMenu();
+  });
   $('listViewBtn')?.addEventListener('click', () => setViewMode('list'));
   $('gridViewBtn')?.addEventListener('click', () => setViewMode('grid'));
   $('gridCols')?.addEventListener('input', () => {
@@ -2691,10 +6735,61 @@ function wire() {
     applyGridColumnSetting();
     if (viewMode === 'grid') renderResults();
   });
+  $('inventoryForm')?.addEventListener('submit', submitInventoryForm);
+  $('inventoryCancel')?.addEventListener('click', clearInventoryForm);
+  $('inventoryBoughtTokens')?.addEventListener('input', () => syncCostInputs('inventoryBoughtTokens', 'inventoryBoughtUsd', 'tokens'));
+  $('inventoryBoughtUsd')?.addEventListener('input', () => syncCostInputs('inventoryBoughtTokens', 'inventoryBoughtUsd', 'usd'));
+  $('inventoryBulkBoughtTokens')?.addEventListener('input', () => syncCostInputs('inventoryBulkBoughtTokens', 'inventoryBulkBoughtUsd', 'tokens'));
+  $('inventoryBulkBoughtUsd')?.addEventListener('input', () => syncCostInputs('inventoryBulkBoughtTokens', 'inventoryBulkBoughtUsd', 'usd'));
+  $('inventoryBatchAddBtn')?.addEventListener('click', addInventoryBatch);
+  $('inventoryBulkApplyBtn')?.addEventListener('click', applyInventoryBulkEdit);
+  $('inventorySearch')?.addEventListener('input', renderInventory);
+  $('inventoryAccountFilter')?.addEventListener('input', renderInventory);
+  if ($('inventorySort')) $('inventorySort').value = inventorySortMode;
+  $('inventorySort')?.addEventListener('input', () => {
+    inventorySortMode = $('inventorySort').value || 'date_desc';
+    localStorage.setItem('cs2StickerInventorySort', inventorySortMode);
+    renderInventory();
+  });
+  $('inventoryClearFiltersBtn')?.addEventListener('click', () => {
+    if ($('inventorySearch')) $('inventorySearch').value = '';
+    if ($('inventoryAccountFilter')) $('inventoryAccountFilter').value = '';
+    if ($('inventorySort')) {
+      $('inventorySort').value = 'date_desc';
+      inventorySortMode = 'date_desc';
+      localStorage.setItem('cs2StickerInventorySort', inventorySortMode);
+    }
+    renderInventory();
+  });
+  $('inventorySelectVisibleBtn')?.addEventListener('click', selectVisibleInventory);
+  $('inventoryClearSelectionBtn')?.addEventListener('click', clearInventorySelection);
+  $('inventoryDeleteSelectedBtn')?.addEventListener('click', deleteSelectedInventory);
+  $('inventoryGridCols')?.addEventListener('input', () => {
+    applyInventoryGridColumnSetting();
+    renderInventory();
+  });
+  $('inventoryCustomCols')?.addEventListener('input', () => {
+    applyInventoryGridColumnSetting();
+    renderInventory();
+  });
+  $('inventoryGridBtn')?.addEventListener('click', () => {
+    inventoryViewMode = 'grid';
+    renderInventory();
+  });
+  $('inventoryListBtn')?.addEventListener('click', () => {
+    inventoryViewMode = 'list';
+    renderInventory();
+  });
+  $('inventoryGridView')?.addEventListener('click', handleInventoryClick);
+  $('inventoryTbody')?.addEventListener('click', handleInventoryClick);
+  $('inventoryGridView')?.addEventListener('change', handleInventorySelectionChange);
+  $('inventoryTbody')?.addEventListener('change', handleInventorySelectionChange);
+  $('inventoryExportBtn')?.addEventListener('click', downloadInventoryCsv);
   $('resetBtn').addEventListener('click', () => {
-    ['search','verdictFilter','variantFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','lowGapMax','sortPreset','scoredFilter']
+    ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','sortPreset','scoredFilter']
       .forEach(id => $(id).value = '');
-    $('rowLimit').value = '120';
+    resetVariantFilter();
+    $('rowLimit').value = '0';
     viewMode = 'list';
     $('gridCols').value = 'auto';
     $('gridCustomCols').value = '';
@@ -2716,7 +6811,12 @@ function wire() {
   }));
   setupSparkTooltip();
   setupDetailModal();
+  setupInventoryDrawer();
+  setupFavorites();
+  setupPriceFetch();
   applyFilters();
+  mergeServerFavorites();
+  loadInventory();
 }
 
 wire();
@@ -2727,6 +6827,7 @@ wire();
         template
         .replace("__DATA_JSON__", data_json)
         .replace("__SERIES_JSON__", series_json)
+        .replace("__FAVORITES_JSON__", favorites_json)
         .replace("__VERDICT_COLORS__", json.dumps(VERDICT_COLORS))
         .replace("__VERDICT_ORDER__", json.dumps(VERDICT_ORDER))
     )
@@ -2737,6 +6838,7 @@ def main() -> None:
     history = load_history()
     series = build_history_series(analysis, history)
     records = [row_to_record(row) for _, row in analysis.iterrows()]
+    enrich_csgoskins_prices(records)
     write_priority_csv(analysis)
     html_text = build_html(records, series)
     out_path = OUT_DIR / "sticker_dashboard.html"
