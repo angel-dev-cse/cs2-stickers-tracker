@@ -1,4 +1,4 @@
 ﻿signal,observations,overall_mean_next_return_pct,top_quintile_mean_next_return_pct,top_quintile_hit_rate_pct,bottom_quintile_mean_next_return_pct,bottom_quintile_hit_rate_pct,spread_top_minus_bottom_pct
-cheap_percentile_signal,37149,1.02,3.85,17.2,-0.39,17.61,4.24
-recent_drop_signal,37149,1.02,-3.36,9.03,3.77,11.4,-7.13
-recent_momentum_signal,37149,1.02,7.46,42.76,1.84,6.45,5.62
+cheap_percentile_signal,41009,0.8,3.54,17.72,-0.59,18.13,4.13
+recent_drop_signal,41009,0.8,-4.35,7.67,3.41,10.33,-7.76
+recent_momentum_signal,41009,0.8,8.03,47.31,1.67,5.84,6.36

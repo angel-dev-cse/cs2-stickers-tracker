@@ -16,6 +16,7 @@ SNAPSHOT_DIR = DATA_DIR / "snapshots"
 LATEST_SNAPSHOT_PATH = DATA_DIR / "latest_snapshot.csv"
 SCORES_PATH = DATA_DIR / "scores.csv"
 HISTORY_PATH = DATA_DIR / "history_points.csv"
+SECOND_MARKET_HISTORY_PATH = Path("visualized") / "second_market_history.csv"
 
 OUT_DIR = Path("analyze")
 DEFAULT_VARIANTS = "Paper,Foil,Holo,Gold"
@@ -44,7 +45,7 @@ def output_dir() -> Path:
 
 
 def read_csv_best(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, encoding="utf-8-sig")
+    return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
 
 
 def read_csv_loose(path: Path) -> pd.DataFrame:
@@ -205,6 +206,174 @@ def percentile_rank(series: pd.Series) -> pd.Series:
 
 def score_clip(value: pd.Series | float, low: float = 0, high: float = 1):
     return pd.Series(value).clip(low, high) if not isinstance(value, pd.Series) else value.clip(low, high)
+
+
+def load_second_market_history() -> pd.DataFrame:
+    if not SECOND_MARKET_HISTORY_PATH.exists():
+        return pd.DataFrame()
+    try:
+        df = read_csv_loose(SECOND_MARKET_HISTORY_PATH)
+    except Exception:
+        return pd.DataFrame()
+    if "sticker_id" not in df.columns:
+        return pd.DataFrame()
+    for col in ["low_usd", "csfloat_usd", "uuskins_usd", "fetched_at"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "low_usd" not in df.columns:
+        df["low_usd"] = np.nan
+    if "csfloat_usd" not in df.columns:
+        df["csfloat_usd"] = np.nan
+    if "uuskins_usd" not in df.columns:
+        df["uuskins_usd"] = np.nan
+    df["low_usd"] = df["low_usd"].fillna(df[["csfloat_usd", "uuskins_usd"]].min(axis=1))
+    df = df[df["sticker_id"].astype(str).str.strip() != ""].copy()
+    df = df[df[["low_usd", "csfloat_usd", "uuskins_usd"]].notna().any(axis=1)].copy()
+    if "timestamp" in df.columns:
+        df["timestamp_dt"] = datetime_column(df, "timestamp")
+    else:
+        df["timestamp_dt"] = pd.NaT
+    return df
+
+
+def recent_pct_slope(values: pd.Series) -> float:
+    y = pd.to_numeric(values, errors="coerce").dropna().astype(float)
+    if len(y) < 3:
+        return np.nan
+    base = float(y.iloc[0])
+    if base <= 0:
+        return np.nan
+    x = np.arange(len(y), dtype=float)
+    slope = np.polyfit(x, y.to_numpy(dtype=float), 1)[0]
+    return float((slope / base) * 100)
+
+
+def summarize_second_market_history(history: pd.DataFrame) -> pd.DataFrame:
+    cols = [
+        "sticker_id", "second_market_points", "second_market_latest_low_usd",
+        "second_market_previous_low_usd", "second_market_low_usd", "second_market_high_usd",
+        "second_market_change_pct", "second_market_slope_pct", "second_market_position",
+        "second_market_new_low", "csfloat_latest_usd", "uuskins_latest_usd",
+    ]
+    if history.empty:
+        return pd.DataFrame(columns=cols)
+
+    sort_cols = []
+    if "fetched_at" in history.columns:
+        sort_cols.append("fetched_at")
+    if "timestamp_dt" in history.columns:
+        sort_cols.append("timestamp_dt")
+    if sort_cols:
+        history = history.sort_values(sort_cols, na_position="last")
+
+    rows: list[dict[str, object]] = []
+    for sticker_id, group in history.groupby("sticker_id", sort=False):
+        g = group.copy()
+        lows = pd.to_numeric(g["low_usd"], errors="coerce").dropna()
+        if lows.empty:
+            continue
+        latest = float(lows.iloc[-1])
+        previous = float(lows.iloc[-2]) if len(lows) >= 2 else np.nan
+        low = float(lows.min())
+        high = float(lows.max())
+        span = high - low
+        position = ((latest - low) / span) if span > 1e-9 else 0.0
+        recent = lows.tail(8)
+        slope = recent_pct_slope(recent)
+        change = pct_change(latest, previous)
+        new_low = bool(latest <= low * 1.01)
+
+        csfloat_series = pd.to_numeric(g["csfloat_usd"], errors="coerce").dropna()
+        uuskins_series = pd.to_numeric(g["uuskins_usd"], errors="coerce").dropna()
+
+        rows.append({
+            "sticker_id": str(sticker_id),
+            "second_market_points": int(len(lows)),
+            "second_market_latest_low_usd": latest,
+            "second_market_previous_low_usd": previous,
+            "second_market_low_usd": low,
+            "second_market_high_usd": high,
+            "second_market_change_pct": change,
+            "second_market_slope_pct": slope,
+            "second_market_position": position,
+            "second_market_new_low": new_low,
+            "csfloat_latest_usd": float(csfloat_series.iloc[-1]) if len(csfloat_series) else np.nan,
+            "uuskins_latest_usd": float(uuskins_series.iloc[-1]) if len(uuskins_series) else np.nan,
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+
+def add_second_market_signals(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    defaults = {
+        "second_market_points": 0,
+        "second_market_latest_low_usd": np.nan,
+        "second_market_previous_low_usd": np.nan,
+        "second_market_low_usd": np.nan,
+        "second_market_high_usd": np.nan,
+        "second_market_change_pct": np.nan,
+        "second_market_slope_pct": np.nan,
+        "second_market_position": np.nan,
+        "second_market_new_low": False,
+        "csfloat_latest_usd": np.nan,
+        "uuskins_latest_usd": np.nan,
+    }
+    for col, default in defaults.items():
+        if col not in df.columns:
+            df[col] = default
+
+    latest = pd.to_numeric(df["second_market_latest_low_usd"], errors="coerce")
+    points = pd.to_numeric(df["second_market_points"], errors="coerce").fillna(0)
+    usd_price = pd.to_numeric(df.get("usd_price", np.nan), errors="coerce")
+    price_tokens = pd.to_numeric(df.get("price_tokens", np.nan), errors="coerce")
+    hist_min = pd.to_numeric(df.get("hist_min", np.nan), errors="coerce")
+    steam_low_usd = np.where((price_tokens > 0) & (hist_min > 0) & usd_price.notna(), (hist_min / price_tokens) * usd_price, np.nan)
+    steam_low_usd = pd.Series(steam_low_usd, index=df.index)
+
+    df["second_market_discount_to_steam_pct"] = np.where(
+        (latest.notna()) & (usd_price > 0),
+        ((usd_price - latest) / usd_price) * 100,
+        np.nan,
+    )
+    df["second_market_true_edge_pct"] = np.where(
+        (latest.notna()) & (steam_low_usd > 0),
+        ((steam_low_usd - latest) / steam_low_usd) * 100,
+        np.nan,
+    )
+
+    change = pd.to_numeric(df["second_market_change_pct"], errors="coerce")
+    slope = pd.to_numeric(df["second_market_slope_pct"], errors="coerce")
+    position = pd.to_numeric(df["second_market_position"], errors="coerce").fillna(0.5).clip(0, 1)
+    new_low = df["second_market_new_low"].map(
+        lambda value: False if pd.isna(value) else str(value).strip().lower() in {"true", "1", "yes"}
+    )
+    coverage = (points / 5).clip(0, 1)
+    falling = ((change <= -4) | (slope <= -3)).fillna(False)
+    rising = ((change >= 4) | (slope >= 3)).fillna(False)
+
+    wait = pd.Series(0.0, index=df.index)
+    wait = wait.mask(points < 2, 0.10)
+    wait = wait.mask(falling, np.maximum(wait, 0.42))
+    wait = wait.mask(new_low & falling, np.maximum(wait, 0.68))
+    wait = wait.mask((df["second_market_true_edge_pct"] < -20) & falling, np.maximum(wait, 0.58))
+    wait = wait.mask((position <= 0.08) & falling, np.maximum(wait, 0.55))
+    wait = wait.mask(rising & (df["second_market_true_edge_pct"] > 0), wait * 0.55)
+    df["second_market_wait_penalty"] = wait.fillna(0).clip(0, 1).round(4)
+
+    true_edge_score = (pd.to_numeric(df["second_market_true_edge_pct"], errors="coerce").fillna(-25) / 45).clip(0, 1)
+    discount_score = (pd.to_numeric(df["second_market_discount_to_steam_pct"], errors="coerce").fillna(0) / 70).clip(0, 1)
+    stabilization = (1 - df["second_market_wait_penalty"]).clip(0, 1)
+    df["second_market_score"] = (
+        coverage * (
+            0.45 * true_edge_score
+            + 0.25 * discount_score
+            + 0.20 * stabilization
+            + 0.10 * (1 - position)
+        )
+    ).clip(0, 1)
+    df.loc[pd.to_numeric(df["second_market_true_edge_pct"], errors="coerce") < -20, "second_market_score"] *= 0.45
+    df["second_market_score"] = df["second_market_score"].fillna(0).clip(0, 1).round(4)
+    return df
 
 
 def linear_slope(values: Iterable[float]) -> float:
@@ -1052,6 +1221,8 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
     downside = df["downside_risk_score"].fillna(0).clip(0, 1)
     divergence = df["demand_price_divergence_score"].fillna(0).clip(0, 1)
     falling_demand = df["falling_demand_penalty"].fillna(0).clip(0, 1)
+    second_market_score = df["second_market_score"].fillna(0).clip(0, 1) if "second_market_score" in df.columns else pd.Series(0, index=df.index)
+    second_market_wait = df["second_market_wait_penalty"].fillna(0).clip(0, 1) if "second_market_wait_penalty" in df.columns else pd.Series(0, index=df.index)
     note_adjustment = df["note_score_adjustment"].fillna(0).clip(-0.15, 0.10)
     history_coverage = df["history_coverage_score"].fillna(0).clip(0, 1)
     metadata_ok = (
@@ -1077,8 +1248,10 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         + 0.08 * df["trend_score"]
         + 0.06 * entry_change
         + 0.03 * divergence
+        + 0.04 * second_market_score
         - 0.10 * downside
         - 0.07 * falling_demand
+        - 0.08 * second_market_wait
         - 0.04 * (1 - history_coverage)
     ).clip(0, 1).round(4)
 
@@ -1090,8 +1263,10 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         + 0.13 * demand
         + 0.06 * divergence
         + 0.05 * discount
+        + 0.05 * second_market_score
         - 0.15 * df["flood_risk_score"]
         - 0.08 * falling_demand
+        - 0.07 * second_market_wait
         - 0.05 * uncertainty
         + note_adjustment
     ).clip(0, 1).round(4)
@@ -1104,11 +1279,13 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         + 0.12 * expected
         + 0.10 * demand
         + 0.06 * divergence
+        + 0.05 * second_market_score
         + 0.05 * ((df["manual_demand_score"].fillna(6) - 5) / 5).clip(0, 1) * score_confidence
         + 0.04 * ((df["manual_color_craft_score"].fillna(6) - 5) / 5).clip(0, 1) * score_confidence
         - 0.13 * df["flood_risk_score"]
         - 0.08 * df["position_in_range"].clip(0, 1)
         - 0.08 * falling_demand
+        - 0.10 * second_market_wait
         - 0.07 * uncertainty
         + note_adjustment
     ).clip(0, 1).round(4)
@@ -1119,10 +1296,12 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         + 0.12 * entry_change
         + 0.10 * df["trend_score"]
         + 0.08 * divergence
+        + 0.10 * second_market_score
         + 0.09 * rank
         - 0.18 * df["flood_risk_score"]
         - 0.10 * downside
         - 0.08 * falling_demand
+        - 0.12 * second_market_wait
         - 0.06 * uncertainty
         + note_adjustment
     ).clip(0, 1).round(4)
@@ -1206,6 +1385,16 @@ def build_quick_reason(row: pd.Series) -> str:
     if trend and trend != "Neutral":
         # Keep trend readable in the table; details are in separate columns.
         parts.append(trend.replace("Floor + prior bounce, but lower highs", "Floor + bounce, lower highs"))
+    second_market_edge = row.get("second_market_true_edge_pct", np.nan)
+    second_market_wait = metric_value(row, "second_market_wait_penalty", 0)
+    second_market_change = row.get("second_market_change_pct", np.nan)
+    if pd.notna(second_market_edge):
+        parts.append(f"2P edge {second_market_edge:+.0f}%")
+    if second_market_wait >= 0.55:
+        if pd.notna(second_market_change):
+            parts.append(f"2P falling {second_market_change:+.0f}%")
+        else:
+            parts.append("2P still falling")
     if not bool(row.get("scored", False)):
         parts.append("score first")
     if metric_value(row, "prediction_confidence", 0) < 0.45:
@@ -1218,6 +1407,10 @@ def build_quick_reason(row: pd.Series) -> str:
 
 def build_action_note(row: pd.Series) -> str:
     verdict = str(row.get("verdict", ""))
+    if metric_value(row, "second_market_wait_penalty", 0) >= 0.62:
+        return "2P market is still making lower lows; wait for stabilization before adding."
+    if metric_value(row, "second_market_true_edge_pct", 0) < -20 and metric_value(row, "second_market_latest_low_usd", np.nan) > 0:
+        return "2P is cheaper than current Steam but still above Steam's recorded low; wait for a stronger entry."
     if verdict == "CORE BUY CANDIDATE":
         return "Best scored candidate; still size carefully."
     if verdict == "SMALL BUY":
@@ -1250,6 +1443,10 @@ def build_risk_note(row: pd.Series) -> str:
         risks.append("near range high")
     if metric_value(row, "falling_demand_penalty") >= 0.45:
         risks.append("falling demand")
+    if metric_value(row, "second_market_wait_penalty") >= 0.55:
+        risks.append("2P still falling")
+    if bool(row.get("second_market_new_low", False)):
+        risks.append("2P new low")
     if bool(row.get("scored", False)) and metric_value(row, "quality_score") < 7.2:
         risks.append("modest quality score")
     if not bool(row.get("scored", False)):
@@ -1291,6 +1488,8 @@ def final_verdict(row: pd.Series) -> str:
     expected = metric_value(row, "expected_return_pct", 0)
     confidence = metric_value(row, "prediction_confidence", 0)
     falling_demand = metric_value(row, "falling_demand_penalty", 0)
+    second_market_wait = metric_value(row, "second_market_wait_penalty", 0)
+    second_market_edge = metric_value(row, "second_market_true_edge_pct", np.nan)
     raw_pos = row.get("position_in_range", 0.5)
     pos = 0.5 if pd.isna(raw_pos) else float(raw_pos)
     entry = str(row.get("entry_tier", ""))
@@ -1301,6 +1500,8 @@ def final_verdict(row: pd.Series) -> str:
         return "DO NOT CHASE"
     if flood == "Extreme" and pos > 0.45:
         return "FLOOD RISK"
+    if second_market_wait >= 0.62 and (pd.isna(second_market_edge) or second_market_edge < 8) and value_edge < 0.66:
+        return "WAIT FOR DROP"
 
     cheap_punt = (
         entry in {"Very Cheap", "Cheap"}
@@ -1487,6 +1688,21 @@ def compact_outputs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
         "demand_share_acceleration",
         "avg_positive_demand_share",
         "latest_positive_demand_share",
+        "second_market_points",
+        "second_market_latest_low_usd",
+        "second_market_previous_low_usd",
+        "second_market_low_usd",
+        "second_market_high_usd",
+        "second_market_change_pct",
+        "second_market_slope_pct",
+        "second_market_position",
+        "second_market_new_low",
+        "second_market_discount_to_steam_pct",
+        "second_market_true_edge_pct",
+        "second_market_wait_penalty",
+        "second_market_score",
+        "csfloat_latest_usd",
+        "uuskins_latest_usd",
         "crowding_percentile",
         "entry_score",
         "flood_risk_score",
@@ -1568,6 +1784,8 @@ def main() -> None:
     scores = load_scores()
     history = clean_history(load_history())
     history_summary = summarize_history(history)
+    second_market_history = load_second_market_history()
+    second_market_summary = summarize_second_market_history(second_market_history)
 
     snapshots["timestamp"] = pd.to_datetime(snapshots["timestamp"], errors="coerce")
     snapshots = snapshots.dropna(subset=["timestamp"])
@@ -1591,10 +1809,13 @@ def main() -> None:
 
     df = latest.merge(snapshot_summary, on="sticker_id", how="left")
     df = df.merge(history_summary, on="sticker_id", how="left")
+    if not second_market_summary.empty:
+        df = df.merge(second_market_summary, on="sticker_id", how="left")
     df = add_history_metrics(df)
     df = add_scores(df, scores)
     df = add_entry_tier(df)
     df = add_trend_and_flood(df)
+    df = add_second_market_signals(df)
     df = add_signal_scores(df)
     df = add_portfolio_fields(df)
 
@@ -1617,6 +1838,8 @@ def main() -> None:
     print(f"Latest snapshot: {latest_time}")
     print(f"History points used: {len(history)}")
     print(f"Stickers with history: {history_summary['sticker_id'].nunique() if not history_summary.empty else 0}")
+    print(f"2P history points used: {len(second_market_history)}")
+    print(f"Stickers with 2P history: {second_market_summary['sticker_id'].nunique() if not second_market_summary.empty else 0}")
     print(f"Saved decision board: {decision_path}")
     print(f"Saved watchlist: {watch_path}")
     print(f"Saved score targets: {score_targets_path}")

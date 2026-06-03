@@ -104,14 +104,18 @@ def refresh_csgoskins_prices(items: list[object]) -> list[dict[str, object]]:
         CSGOSKINS_WORKERS,
         csgoskins_url,
         fetch_csgoskins_price,
+        append_second_market_history,
         merge_csgoskins_cache_entry,
         read_csgoskins_cache,
         safe_float,
+        second_market_history_row,
+        trusted_2p_low,
         write_csgoskins_cache,
     )
 
     cache = read_csgoskins_cache()
     refreshed: list[dict[str, object]] = []
+    history_rows: list[dict[str, object]] = []
     favorites = set(read_favorites())
     eligible: list[tuple[int, dict[str, object], str, dict[str, object]]] = []
 
@@ -143,9 +147,10 @@ def refresh_csgoskins_prices(items: list[object]) -> list[dict[str, object]]:
         group = 0 if is_favorite else 1 if variant == "Holo" else 2
         eligible.append((group, base, url, previous))
 
-    def fetch_one(base: dict[str, object], url: str, previous: dict[str, object]) -> tuple[str, dict[str, object], dict[str, object]]:
+    def fetch_one(base: dict[str, object], url: str, previous: dict[str, object]) -> tuple[str, dict[str, object], dict[str, object], dict[str, object] | None]:
         result = fetch_csgoskins_price(url, str(base.get("market_hash_name", "")), str(base.get("sticker", "")))
         cache_entry = merge_csgoskins_cache_entry(previous, result)
+        history_row = second_market_history_row(base, cache_entry, source="api")
         status = str(result.get("status", "error"))
         fetched_at = result.get("fetched_at")
 
@@ -155,12 +160,9 @@ def refresh_csgoskins_prices(items: list[object]) -> list[dict[str, object]]:
             row_status = str(cache_entry.get("status", status))
         markets = cache_entry.get("markets") if isinstance(cache_entry.get("markets"), dict) else {}
         market_sources = cache_entry.get("market_sources") if isinstance(cache_entry.get("market_sources"), dict) else {}
-        price_candidates = [safe_float(cache_entry.get("price"), None)]
-        price_candidates.extend(safe_float(price, None) for price in markets.values())
-        price_candidates = [price for price in price_candidates if price is not None and price > 0]
         row = {
             **base,
-            "price": min(price_candidates) if price_candidates else None,
+            "price": trusted_2p_low(cache_entry),
             "status": row_status,
             "fetched_at": cache_entry.get("fetched_at", fetched_at),
             "markets": markets,
@@ -171,7 +173,7 @@ def refresh_csgoskins_prices(items: list[object]) -> list[dict[str, object]]:
             "csfloat_low_usd": safe_float(markets.get("CSFloat"), None),
             "uuskins_low_usd": safe_float(markets.get("UUSkins"), None),
         }
-        return url, cache_entry, row
+        return url, cache_entry, row, history_row
 
     if eligible:
         for group in (0, 1, 2):
@@ -182,11 +184,14 @@ def refresh_csgoskins_prices(items: list[object]) -> list[dict[str, object]]:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = [executor.submit(fetch_one, base, url, previous) for base, url, previous in group_items]
                 for future in as_completed(futures):
-                    url, cache_entry, row = future.result()
+                    url, cache_entry, row, history_row = future.result()
                     cache[url] = cache_entry
                     refreshed.append(row)
+                    if history_row:
+                        history_rows.append(history_row)
 
     write_csgoskins_cache(cache)
+    append_second_market_history(history_rows)
     return refreshed
 
 

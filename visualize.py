@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,6 +10,7 @@ import math
 import re
 import time
 import unicodedata
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -20,12 +22,31 @@ ANALYZE_DIR = Path("analyze")
 OUT_DIR = Path("visualized")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 CSGOSKINS_CACHE_PATH = OUT_DIR / "csgoskins_prices.json"
+SECOND_MARKET_HISTORY_PATH = OUT_DIR / "second_market_history.csv"
 FAVORITES_PATH = OUT_DIR / "favorites.json"
 CSGOSKINS_CACHE_TTL_SECONDS = 6 * 60 * 60
 CSGOSKINS_ERROR_RETRY_SECONDS = 4 * 60 * 60
 CSGOSKINS_WORKERS = 3
 CSGOSKINS_GENERATION_FETCH_LIMIT = 90
 UUSKINS_STICKER_CATEGORY_ID = 106
+MIN_REASONABLE_2P_USD = 0.10
+GENERIC_2P_OUTLIER_RATIO = 0.45
+SECOND_MARKET_HISTORY_FIELDS = [
+    "timestamp",
+    "fetched_at",
+    "source",
+    "sticker_id",
+    "market_hash_name",
+    "sticker",
+    "variant",
+    "csgoskins_url",
+    "status",
+    "low_usd",
+    "csfloat_usd",
+    "uuskins_usd",
+    "csfloat_source",
+    "uuskins_source",
+]
 
 VERDICT_ORDER = {
     "CORE BUY CANDIDATE": 0,
@@ -124,6 +145,35 @@ def safe_float(value, default=None):
         return default
 
 
+def trusted_2p_price_candidates(entry: dict[str, object]) -> list[float]:
+    """Return marketplace prices after rejecting parser artifacts such as $0.01 UI text."""
+    if not isinstance(entry, dict):
+        return []
+    markets = entry.get("markets") if isinstance(entry.get("markets"), dict) else {}
+    market_prices = [
+        price
+        for price in (safe_float(value, None) for value in markets.values())
+        if price is not None and price >= MIN_REASONABLE_2P_USD
+    ]
+    direct = safe_float(entry.get("price"), None)
+    candidates = list(market_prices)
+
+    if direct is not None and direct >= MIN_REASONABLE_2P_USD:
+        if market_prices:
+            # Generic CSGOSkins page parsing can catch unrelated tiny amounts. Only trust
+            # a direct price when it is in the same range as named marketplace offers.
+            if direct >= min(market_prices) * GENERIC_2P_OUTLIER_RATIO:
+                candidates.append(direct)
+        else:
+            candidates.append(direct)
+    return candidates
+
+
+def trusted_2p_low(entry: dict[str, object]) -> float | None:
+    candidates = trusted_2p_price_candidates(entry)
+    return min(candidates) if candidates else None
+
+
 def safe_bool(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "y"}
 
@@ -210,6 +260,161 @@ def write_csgoskins_cache(cache: dict[str, dict[str, object]]) -> None:
     CSGOSKINS_CACHE_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def timestamp_iso(value: object) -> str:
+    ts = safe_float(value, None)
+    if ts is None:
+        ts = time.time()
+    return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def second_market_history_row(
+    base: dict[str, object],
+    entry: dict[str, object],
+    source: str = "visualize",
+) -> dict[str, object] | None:
+    entry = entry if isinstance(entry, dict) else {}
+    markets = entry.get("markets") if isinstance(entry.get("markets"), dict) else {}
+    market_sources = entry.get("market_sources") if isinstance(entry.get("market_sources"), dict) else {}
+    low = trusted_2p_low(entry)
+    csfloat = safe_float(markets.get("CSFloat"), None)
+    uuskins = safe_float(markets.get("UUSkins"), None)
+    if low is None and csfloat is None and uuskins is None:
+        return None
+    fetched_at = int(safe_float(entry.get("fetched_at"), time.time()) or time.time())
+    return {
+        "timestamp": timestamp_iso(fetched_at),
+        "fetched_at": fetched_at,
+        "source": source,
+        "sticker_id": str(base.get("sticker_id", "") or ""),
+        "market_hash_name": str(base.get("market_hash_name", "") or ""),
+        "sticker": str(base.get("sticker", "") or ""),
+        "variant": str(base.get("variant", "") or ""),
+        "csgoskins_url": str(base.get("csgoskins_url", "") or ""),
+        "status": str(entry.get("status", "") or ""),
+        "low_usd": low,
+        "csfloat_usd": csfloat,
+        "uuskins_usd": uuskins,
+        "csfloat_source": str(market_sources.get("CSFloat", "") or ""),
+        "uuskins_source": str(market_sources.get("UUSkins", "") or ""),
+    }
+
+
+def append_second_market_history(rows: list[dict[str, object]]) -> int:
+    clean_rows = [row for row in rows if row]
+    if not clean_rows:
+        return 0
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    existing_keys: set[tuple[str, str, str, str, str]] = set()
+    if SECOND_MARKET_HISTORY_PATH.exists():
+        try:
+            with open(SECOND_MARKET_HISTORY_PATH, newline="", encoding="utf-8-sig") as file:
+                for row in csv.DictReader(file):
+                    existing_keys.add((
+                        str(row.get("fetched_at", "")),
+                        str(row.get("csgoskins_url", "")),
+                        str(row.get("low_usd", "")),
+                        str(row.get("csfloat_usd", "")),
+                        str(row.get("uuskins_usd", "")),
+                    ))
+        except OSError:
+            existing_keys = set()
+
+    to_write: list[dict[str, object]] = []
+    for row in clean_rows:
+        key = (
+            str(row.get("fetched_at", "")),
+            str(row.get("csgoskins_url", "")),
+            "" if row.get("low_usd") is None else str(row.get("low_usd")),
+            "" if row.get("csfloat_usd") is None else str(row.get("csfloat_usd")),
+            "" if row.get("uuskins_usd") is None else str(row.get("uuskins_usd")),
+        )
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        to_write.append({field: row.get(field, "") for field in SECOND_MARKET_HISTORY_FIELDS})
+
+    if not to_write:
+        return 0
+    exists = SECOND_MARKET_HISTORY_PATH.exists() and SECOND_MARKET_HISTORY_PATH.stat().st_size > 0
+    with open(SECOND_MARKET_HISTORY_PATH, "a", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=SECOND_MARKET_HISTORY_FIELDS)
+        if not exists:
+            writer.writeheader()
+        writer.writerows(to_write)
+    return len(to_write)
+
+
+def seed_second_market_history_from_records(records: list[dict]) -> int:
+    cache = read_csgoskins_cache()
+    rows: list[dict[str, object]] = []
+    for record in records:
+        url = str(record.get("csgoskins_url", "") or "")
+        entry = cache.get(url)
+        if not isinstance(entry, dict):
+            continue
+        row = second_market_history_row(record, entry, source="cache_seed")
+        if row:
+            rows.append(row)
+    return append_second_market_history(rows)
+
+
+def build_second_market_series(records: list[dict]) -> dict[str, list[dict]]:
+    if not SECOND_MARKET_HISTORY_PATH.exists():
+        return {}
+
+    by_url = {str(record.get("csgoskins_url", "")): str(record.get("sticker_id", "")) for record in records}
+    by_name = {str(record.get("market_hash_name", "")).lower(): str(record.get("sticker_id", "")) for record in records}
+    valid_ids = {str(record.get("sticker_id", "")) for record in records}
+    grouped: dict[str, list[dict]] = {}
+
+    try:
+        with open(SECOND_MARKET_HISTORY_PATH, newline="", encoding="utf-8-sig") as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                sid = str(row.get("sticker_id", "") or "").strip()
+                if not sid:
+                    sid = by_url.get(str(row.get("csgoskins_url", "") or ""), "")
+                if not sid:
+                    sid = by_name.get(str(row.get("market_hash_name", "") or "").lower(), "")
+                if not sid or sid not in valid_ids:
+                    continue
+
+                low = safe_float(row.get("low_usd"), None)
+                csfloat = safe_float(row.get("csfloat_usd"), None)
+                uuskins = safe_float(row.get("uuskins_usd"), None)
+                if low is None and csfloat is None and uuskins is None:
+                    continue
+                fetched_at = safe_float(row.get("fetched_at"), None)
+                time_label = str(row.get("timestamp", "") or "")
+                grouped.setdefault(sid, []).append({
+                    "time": time_label,
+                    "fetched_at": fetched_at,
+                    "low": low,
+                    "csfloat": csfloat,
+                    "uuskins": uuskins,
+                    "source": str(row.get("source", "") or ""),
+                })
+    except OSError:
+        return {}
+
+    series: dict[str, list[dict]] = {}
+    for sid, points in grouped.items():
+        points.sort(key=lambda p: (p.get("fetched_at") is None, p.get("fetched_at") or 0, p.get("time") or ""))
+        deduped: dict[tuple[object, object, object, object], dict] = {}
+        for point in points:
+            key = (
+                point.get("fetched_at"),
+                point.get("low"),
+                point.get("csfloat"),
+                point.get("uuskins"),
+            )
+            deduped[key] = point
+        clean = list(deduped.values())
+        clean.sort(key=lambda p: (p.get("fetched_at") is None, p.get("fetched_at") or 0, p.get("time") or ""))
+        series[sid] = clean[-80:]
+    return series
+
+
 def read_favorites() -> set[str]:
     if not FAVORITES_PATH.exists():
         return set()
@@ -256,17 +461,18 @@ def parse_csgoskins_prices(raw_html: str) -> dict[str, object]:
 
     active_start = text.lower().find("active offers")
     active_text = text[active_start:active_start + 9000] if active_start >= 0 else text
-    active_prices = prices_from_text(active_text)
     markets = {
         "CSFloat": parse_marketplace_offer(active_text, ["CSFloat", "CS Float"]),
         "UUSkins": parse_marketplace_offer(active_text, ["UUSKINS", "UU SKINS", "UUSkins"]),
     }
     markets = {key: value for key, value in markets.items() if value is not None}
-    candidates = list(active_prices)
+    candidates = list(markets.values())
     if normal_price is not None:
         candidates.append(normal_price)
-    candidates.extend(markets.values())
-    return {"price": min(candidates) if candidates else None, "markets": markets}
+    parsed = {"price": min(candidates) if candidates else None, "markets": markets}
+    trusted = trusted_2p_low(parsed)
+    parsed["price"] = trusted
+    return parsed
 
 
 def parse_csgoskins_price(raw_html: str) -> float | None:
@@ -457,12 +663,9 @@ def fetch_csgoskins_price(url: str, market_hash_name: str = "", sticker: str = "
         fallback_markets = fallback.get("markets") if isinstance(fallback.get("markets"), dict) else {}
         if fallback_markets:
             merged_markets = {**markets, **fallback_markets}
-            candidates = [safe_float(result.get("price"), None)] + [
-                safe_float(price, None) for price in merged_markets.values()
-            ]
-            candidates = [price for price in candidates if price is not None and price > 0]
-            result["price"] = min(candidates) if candidates else result.get("price")
             result["markets"] = merged_markets
+            trusted = trusted_2p_low({"price": result.get("price"), "markets": merged_markets})
+            result["price"] = trusted if trusted is not None else result.get("price")
             result["market_sources"] = {
                 **({} if not isinstance(result.get("market_sources"), dict) else result.get("market_sources")),
                 **{key: "SkinSniper" for key in fallback_markets},
@@ -484,12 +687,9 @@ def fetch_csgoskins_price(url: str, market_hash_name: str = "", sticker: str = "
         result["uuskins_status"] = uuskins.get("status")
         if uuskins_price is not None:
             markets = {**markets, "UUSkins": uuskins_price}
-            candidates = [safe_float(result.get("price"), None)] + [
-                safe_float(price, None) for price in markets.values()
-            ]
-            candidates = [price for price in candidates if price is not None and price > 0]
-            result["price"] = min(candidates) if candidates else result.get("price")
             result["markets"] = markets
+            trusted = trusted_2p_low({"price": result.get("price"), "markets": markets})
+            result["price"] = trusted if trusted is not None else result.get("price")
             result["market_sources"] = {
                 **({} if not isinstance(result.get("market_sources"), dict) else result.get("market_sources")),
                 "UUSkins": "UUSkins",
@@ -507,20 +707,6 @@ def merge_csgoskins_cache_entry(previous: dict[str, object], result: dict[str, o
     result_status = str(result.get("status", "error"))
     previous_status = str(previous.get("status", ""))
 
-    def lowest_known_price(*entries: dict[str, object]) -> float | None:
-        prices: list[float] = []
-        for entry in entries:
-            direct = safe_float(entry.get("price"), None) if isinstance(entry, dict) else None
-            if direct is not None and direct > 0:
-                prices.append(direct)
-            markets = entry.get("markets") if isinstance(entry, dict) else {}
-            if isinstance(markets, dict):
-                for value in markets.values():
-                    price = safe_float(value, None)
-                    if price is not None and price > 0:
-                        prices.append(price)
-        return min(prices) if prices else None
-
     if result_status == "ok":
         merged_markets = {
             **(previous.get("markets") if isinstance(previous.get("markets"), dict) else {}),
@@ -531,7 +717,7 @@ def merge_csgoskins_cache_entry(previous: dict[str, object], result: dict[str, o
             **(result.get("market_sources") if isinstance(result.get("market_sources"), dict) else {}),
         }
         merged = {**previous, **result, "markets": merged_markets, "market_sources": merged_sources}
-        low = lowest_known_price(result, {"markets": merged_markets}, previous)
+        low = trusted_2p_low(merged)
         if low is not None:
             merged["price"] = low
         return merged
@@ -556,15 +742,18 @@ def merge_csgoskins_cache_entry(previous: dict[str, object], result: dict[str, o
             merged["fallback_status"] = result.get("fallback_status")
         if result.get("fallback_url"):
             merged["fallback_url"] = result.get("fallback_url")
-        low = lowest_known_price(result, merged)
+        low = trusted_2p_low(merged)
         if low is not None:
             merged["price"] = low
         return merged
 
+    low = trusted_2p_low(result)
+    if low is not None:
+        return {**result, "price": low}
     return result
 
 
-def enrich_csgoskins_prices(records: list[dict]) -> None:
+def enrich_csgoskins_prices(records: list[dict], fetch_stale: bool = True) -> None:
     url_variant: dict[str, str] = {}
     url_favorite: dict[str, bool] = {}
     url_record: dict[str, dict] = {}
@@ -596,6 +785,21 @@ def enrich_csgoskins_prices(records: list[dict]) -> None:
         url_favorite[url] = bool(favorites.intersection(favorite_keys))
 
     cache = read_csgoskins_cache()
+    cache_repaired = False
+    for url, entry in list(cache.items()):
+        if not isinstance(entry, dict):
+            continue
+        current = safe_float(entry.get("price"), None)
+        trusted = trusted_2p_low(entry)
+        if trusted is not None and (current is None or abs(current - trusted) > 0.004):
+            entry["price"] = trusted
+            cache[url] = entry
+            cache_repaired = True
+        elif trusted is None and current is not None and current < MIN_REASONABLE_2P_USD:
+            entry["price"] = None
+            entry["status"] = "no_trusted_price"
+            cache[url] = entry
+            cache_repaired = True
     now = time.time()
     eligible = {"Holo", "Foil"}
     urls = {
@@ -619,17 +823,21 @@ def enrich_csgoskins_prices(records: list[dict]) -> None:
         )
     ]
 
-    if missing:
-        favorite_urls = sorted([url for url in missing if url_favorite.get(url)])
-        holo_urls = sorted([url for url in missing if not url_favorite.get(url) and url_variant.get(url) == "Holo"])
-        foil_urls = sorted([url for url in missing if not url_favorite.get(url) and url_variant.get(url) == "Foil"])
+    force_favorite_urls = sorted([url for url in urls if url_favorite.get(url)])
+    target_urls = sorted(set(missing).union(force_favorite_urls)) if fetch_stale else []
+
+    if fetch_stale and target_urls:
+        history_rows: list[dict[str, object]] = []
+        favorite_urls = sorted([url for url in target_urls if url_favorite.get(url)])
+        holo_urls = sorted([url for url in target_urls if not url_favorite.get(url) and url_variant.get(url) == "Holo"])
+        foil_urls = sorted([url for url in target_urls if not url_favorite.get(url) and url_variant.get(url) == "Foil"])
         remaining_budget = max(0, CSGOSKINS_GENERATION_FETCH_LIMIT - len(favorite_urls))
         selected_holo = holo_urls[:remaining_budget]
         remaining_budget = max(0, remaining_budget - len(selected_holo))
         selected_foil = foil_urls[:remaining_budget]
         selected_total = len(favorite_urls) + len(selected_holo) + len(selected_foil)
-        skipped = len(missing) - selected_total
-        print(f"Fetching CSGOSkins prices: {selected_total} prioritized URLs of {len(missing)} stale/missing Holo/Foil URLs")
+        skipped = len(target_urls) - selected_total
+        print(f"Fetching CSGOSkins prices: {selected_total} prioritized URLs of {len(target_urls)} stale/missing/favorite Holo/Foil URLs")
         if skipped > 0:
             print(f"  CSGOSkins skipped this run: {skipped} URLs. Use dashboard fetch buttons to refresh specific stickers.")
         groups = [
@@ -657,7 +865,16 @@ def enrich_csgoskins_prices(records: list[dict]) -> None:
                         result = future.result()
                     except Exception as exc:
                         result = {"price": None, "markets": {}, "status": f"error: {exc.__class__.__name__}", "fetched_at": int(time.time())}
-                    cache[url] = merge_csgoskins_cache_entry(cache.get(url, {}), result)
+                    cache_entry = merge_csgoskins_cache_entry(cache.get(url, {}), result)
+                    cache[url] = cache_entry
+                    history_row = second_market_history_row(url_record.get(url, {}), cache_entry, source=f"visualize:{group_name}")
+                    if history_row:
+                        history_rows.append(history_row)
+        write_csgoskins_cache(cache)
+        appended = append_second_market_history(history_rows)
+        if appended:
+            print(f"  2P history points saved: {appended}")
+    elif cache_repaired:
         write_csgoskins_cache(cache)
 
     for record in records:
@@ -668,10 +885,7 @@ def enrich_csgoskins_prices(records: list[dict]) -> None:
             continue
         entry = cache.get(url, {})
         markets = entry.get("markets") if isinstance(entry.get("markets"), dict) else {}
-        price_candidates = [safe_float(entry.get("price"), None)]
-        price_candidates.extend(safe_float(price, None) for price in markets.values())
-        price_candidates = [price for price in price_candidates if price is not None and price > 0]
-        record["csgoskins_low_usd"] = min(price_candidates) if price_candidates else None
+        record["csgoskins_low_usd"] = trusted_2p_low(entry)
         record["csgoskins_markets"] = markets
         record["csfloat_low_usd"] = safe_float(markets.get("CSFloat"), None)
         record["uuskins_low_usd"] = safe_float(markets.get("UUSkins"), None)
@@ -973,6 +1187,20 @@ def row_to_record(row: pd.Series) -> dict:
         "team_exposure_score": safe_float(val("team_exposure_score"), None),
         "portfolio_group": str(val("portfolio_group", "")),
         "trend_signal": str(val("trend_signal", "")),
+        "second_market_latest_low_usd": safe_float(val("second_market_latest_low_usd"), None),
+        "second_market_previous_low_usd": safe_float(val("second_market_previous_low_usd"), None),
+        "second_market_low_usd": safe_float(val("second_market_low_usd"), None),
+        "second_market_high_usd": safe_float(val("second_market_high_usd"), None),
+        "second_market_change_pct": safe_float(val("second_market_change_pct"), None),
+        "second_market_slope_pct": safe_float(val("second_market_slope_pct"), None),
+        "second_market_true_edge_pct": safe_float(val("second_market_true_edge_pct"), None),
+        "second_market_discount_to_steam_pct": safe_float(val("second_market_discount_to_steam_pct"), None),
+        "second_market_wait_penalty": safe_float(val("second_market_wait_penalty"), None),
+        "second_market_score": safe_float(val("second_market_score"), None),
+        "second_market_points": safe_float(val("second_market_points"), None),
+        "second_market_new_low": safe_bool(val("second_market_new_low", False)),
+        "csfloat_latest_usd": safe_float(val("csfloat_latest_usd"), None),
+        "uuskins_latest_usd": safe_float(val("uuskins_latest_usd"), None),
         "quick_reason": short_text(str(val("quick_reason", val("reason", ""))), 240),
         "risk_note": short_text(str(val("risk_note", "")), 180),
         "action_note": short_text(str(val("action_note", val("suggested_size", ""))), 220),
@@ -997,6 +1225,11 @@ def write_priority_csv(df: pd.DataFrame) -> None:
         "quality_score", "history_score", "decision_score", "trend_score", "value_edge_score",
         "expected_return_pct", "demand_momentum_score", "demand_price_divergence_score",
         "prediction_confidence", "score_confidence", "quick_reason", "risk_note", "action_note",
+        "second_market_latest_low_usd", "second_market_previous_low_usd", "second_market_low_usd",
+        "second_market_high_usd", "second_market_change_pct", "second_market_slope_pct",
+        "second_market_true_edge_pct", "second_market_discount_to_steam_pct",
+        "second_market_wait_penalty", "second_market_score", "second_market_points",
+        "second_market_new_low", "csfloat_latest_usd", "uuskins_latest_usd",
         "item_url", "image_url", "market_hash_name", "steam_market_url", "metadata_status",
     ]
     cols = [c for c in cols if c in df.columns]
@@ -1481,9 +1714,10 @@ wire();
     )
 
 
-def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
+def build_html(records: list[dict], series: dict[str, list[dict]], second_market_series: dict[str, list[dict]]) -> str:
     data_json = json.dumps(records, ensure_ascii=False).replace("</", "<\\/")
     series_json = json.dumps(series, ensure_ascii=False).replace("</", "<\\/")
+    second_market_json = json.dumps(second_market_series, ensure_ascii=False).replace("</", "<\\/")
     favorites_json = json.dumps(sorted(read_favorites()), ensure_ascii=False).replace("</", "<\\/")
 
     template = r"""<!doctype html>
@@ -2341,6 +2575,38 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     font-weight:950;
     font-variant-numeric:tabular-nums;
   }
+  .inventory-guard-badge {
+    display:inline-flex;
+    align-items:center;
+    width:max-content;
+    max-width:100%;
+    min-height:20px;
+    margin-top:4px;
+    padding:3px 7px;
+    border-radius:999px;
+    font-size:10px;
+    font-weight:950;
+    letter-spacing:.01em;
+    font-variant-numeric:tabular-nums;
+    border:1px solid rgba(255,255,255,.14);
+    color:#dbeafe;
+    background:rgba(148,163,184,.12);
+  }
+  .inventory-guard-badge.danger {
+    color:#fecaca;
+    background:rgba(239,68,68,.16);
+    border-color:rgba(248,113,113,.35);
+  }
+  .inventory-guard-badge.good {
+    color:#bbf7d0;
+    background:rgba(34,197,94,.15);
+    border-color:rgba(74,222,128,.32);
+  }
+  .inventory-guard-badge.neutral {
+    color:#dbeafe;
+    background:rgba(96,165,250,.13);
+    border-color:rgba(147,197,253,.28);
+  }
   .inventory-card-subrow {
     display:grid;
     grid-template-columns:1fr;
@@ -2386,12 +2652,12 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .inventory-empty { padding:18px; color:var(--muted); text-align:center; border:1px dashed rgba(169,180,196,.18); border-radius:8px; }
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
   col.rank-col { width:64px; }
-  col.sticker-col { width:28%; }
-  col.price-col { width:11%; }
-  col.decision-col { width:15%; }
-  col.edge-col { width:16%; }
-  col.market-col { width:16%; }
-  col.notes-col { width:14%; }
+  col.sticker-col { width:26%; }
+  col.price-col { width:14%; }
+  col.decision-col { width:14%; }
+  col.edge-col { width:15%; }
+  col.market-col { width:15%; }
+  col.notes-col { width:12%; }
   thead th {
     position:sticky;
     top:0;
@@ -2501,6 +2767,104 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .price-range-row.prev.up { border-color:rgba(52,211,153,.28); background:linear-gradient(90deg, rgba(52,211,153,.12), rgba(91,140,255,.04)); }
   .price-range-row.prev.down { border-color:rgba(251,113,133,.30); background:linear-gradient(90deg, rgba(251,113,133,.12), rgba(91,140,255,.04)); }
   .price-range-row.prev:hover { border-color:rgba(147,197,253,.42); }
+  .owned-price-panel {
+    display:grid;
+    gap:6px;
+    margin-top:11px;
+    padding:8px;
+    border:1px solid rgba(94,230,168,.22);
+    border-radius:10px;
+    background:
+      linear-gradient(180deg, rgba(94,230,168,.08), rgba(59,130,246,.035)),
+      rgba(255,255,255,.026);
+  }
+  .owned-price-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    color:#dff7ea;
+    font-size:10px;
+    font-weight:950;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+  }
+  .owned-price-head b {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-width:22px;
+    height:20px;
+    padding:0 7px;
+    border-radius:999px;
+    background:rgba(94,230,168,.14);
+    border:1px solid rgba(94,230,168,.25);
+    color:#bbf7d0;
+    font-size:11px;
+    font-variant-numeric:tabular-nums;
+  }
+  .owned-price-list {
+    display:grid;
+    gap:5px;
+    max-height:132px;
+    overflow:auto;
+    padding-right:2px;
+  }
+  .owned-price-item {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
+    gap:6px;
+    width:100%;
+    padding:7px 8px;
+    border:1px solid rgba(169,180,196,.14);
+    border-radius:8px;
+    background:rgba(8,13,20,.58);
+    color:#eaf2ff;
+    text-align:left;
+    cursor:pointer;
+    transition:transform .14s ease, border-color .14s ease, background-color .14s ease;
+  }
+  .owned-price-item:hover,
+  .owned-price-item:focus-visible {
+    transform:translateY(-1px);
+    border-color:rgba(94,230,168,.42);
+    background:rgba(20,35,48,.86);
+    outline:none;
+  }
+  .owned-price-account {
+    min-width:0;
+    color:#dbeafe;
+    font-size:11px;
+    font-weight:900;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .owned-price-meta {
+    grid-column:1 / -1;
+    color:#9fb0c5;
+    font-size:10px;
+    font-weight:750;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .owned-price-value {
+    color:#fff;
+    font-size:12px;
+    font-weight:950;
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
+  .inventory-jump-highlight {
+    animation:inventoryJumpPulse 1.8s ease-in-out 1;
+    box-shadow:0 0 0 2px rgba(94,230,168,.62), 0 0 32px rgba(94,230,168,.20) !important;
+  }
+  @keyframes inventoryJumpPulse {
+    0%, 100% { box-shadow:0 0 0 1px rgba(94,230,168,.24), 0 0 0 rgba(94,230,168,0); }
+    35% { box-shadow:0 0 0 3px rgba(94,230,168,.72), 0 0 36px rgba(94,230,168,.26); }
+  }
   .price-delta {
     display:inline-flex;
     align-items:center;
@@ -2568,6 +2932,85 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .spark .area { opacity:.16; }
   .spark-point { cursor:crosshair; }
   .spark-axis { stroke:rgba(152,166,184,.20); stroke-width:1; }
+  .second-market-charts {
+    display:grid;
+    gap:8px;
+    margin-top:10px;
+  }
+  .second-market-chart {
+    border:1px solid rgba(255,255,255,.09);
+    border-radius:9px;
+    background:rgba(255,255,255,.025);
+    padding:7px 8px 5px;
+  }
+  .second-market-chart header {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    margin-bottom:2px;
+    color:#d8e0eb;
+    font-size:10px;
+    font-weight:900;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .second-market-chart header small {
+    color:#9ca9ba;
+    font-size:10px;
+    font-weight:850;
+    letter-spacing:0;
+    text-transform:none;
+    font-variant-numeric:tabular-nums;
+  }
+  .second-market-chart.cf {
+    border-color:rgba(80,174,255,.20);
+    background:rgba(41,123,255,.05);
+  }
+  .second-market-chart.uu {
+    border-color:rgba(255,214,76,.22);
+    background:rgba(255,214,76,.05);
+  }
+  .second-market-spark {
+    width:100%;
+    height:54px;
+    display:block;
+  }
+  .second-market-spark .line {
+    fill:none;
+    stroke-width:2.8;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+  }
+  .second-market-spark .area { opacity:.12; }
+  .second-market-empty {
+    color:#768398;
+    font-size:11px;
+    padding:8px 0 6px;
+  }
+  .second-market-signal {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    margin-top:8px;
+    padding:5px 8px;
+    border-radius:999px;
+    border:1px solid rgba(255,255,255,.10);
+    background:rgba(255,255,255,.04);
+    color:#cbd5e1;
+    font-size:11px;
+    font-weight:900;
+  }
+  .second-market-signal.wait {
+    border-color:rgba(251,113,133,.35);
+    background:rgba(251,113,133,.10);
+    color:#fecdd3;
+  }
+  .second-market-signal.edge {
+    border-color:rgba(94,229,146,.34);
+    background:rgba(94,229,146,.10);
+    color:#bbf7d0;
+  }
   .spark-tip {
     position:fixed;
     display:none;
@@ -3252,6 +3695,78 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
   .store-chip.csfloat .store-icon { background:linear-gradient(135deg,#44e2ff,#3b82f6); }
   .store-chip.uuskins .store-icon { background:linear-gradient(135deg,#f8d24a,#ff8a00); }
   .store-chip b { margin-left:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .second-market-price-grid {
+    grid-column:1 / -1;
+    display:grid;
+    gap:6px;
+    margin-top:2px;
+  }
+  .second-market-price-row {
+    display:grid;
+    grid-template-columns:54px repeat(3, minmax(0,1fr));
+    gap:6px;
+    align-items:stretch;
+    padding:7px;
+    border:1px solid rgba(229,236,247,.10);
+    border-radius:10px;
+    background:rgba(255,255,255,.032);
+    font-variant-numeric:tabular-nums;
+    color:inherit;
+    text-decoration:none;
+    transition:border-color .16s ease, background-color .16s ease, transform .16s ease;
+  }
+  .second-market-price-row:hover {
+    transform:translateY(-1px);
+    border-color:rgba(229,236,247,.20);
+    background:rgba(255,255,255,.055);
+  }
+  .second-market-price-row.cf {
+    border-color:rgba(80,174,255,.20);
+    background:rgba(41,123,255,.045);
+  }
+  .second-market-price-row.uu {
+    border-color:rgba(255,214,76,.22);
+    background:rgba(255,214,76,.045);
+  }
+  .second-market-price-source {
+    display:flex;
+    align-items:center;
+    gap:5px;
+    color:#f4f8ff;
+    font-size:11px;
+    font-weight:950;
+  }
+  .second-market-price-row .store-icon {
+    width:20px;
+    height:20px;
+  }
+  .second-market-price-cell {
+    min-width:0;
+    padding:4px 5px;
+    border-radius:8px;
+    background:rgba(0,0,0,.14);
+  }
+  .second-market-price-cell span {
+    display:block;
+    color:#9da9ba;
+    font-size:9px;
+    font-weight:950;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .second-market-price-cell b {
+    display:block;
+    margin-top:2px;
+    color:#f8fbff;
+    font-size:12px;
+    line-height:1.05;
+    font-weight:950;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .second-market-price-cell.prev b { color:#d7e0ee; }
+  .second-market-price-cell.low b { color:#78f3a6; }
   .skins-action {
     color:#d8e8ff;
     border-color:rgba(80,143,255,.36);
@@ -3733,6 +4248,22 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
     font-size:10px;
     letter-spacing:.01em;
   }
+  .fetch-price-btn[data-state="busy"] {
+    border-color:rgba(57,217,138,.48);
+    color:#dfffee;
+  }
+  .fetch-price-btn[data-state="ok"] {
+    border-color:rgba(94,229,146,.42);
+    color:#bbf7d0;
+  }
+  .fetch-price-btn[data-state="warn"] {
+    border-color:rgba(255,214,76,.42);
+    color:#fde68a;
+  }
+  .fetch-price-btn[data-state="error"] {
+    border-color:rgba(251,113,133,.46);
+    color:#fecdd3;
+  }
   .price-fetch-status {
     display:inline-flex;
     align-items:center;
@@ -4192,8 +4723,8 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
       <div class="field"><label for="favoriteFilter">Bookmarks</label><select id="favoriteFilter"><option value="">All</option><option value="favorites">Favorites only</option><option value="not_favorites">Not favorites</option></select></div>
       <div class="field"><label for="refreshFavoritePricesBtn">2P prices</label><button id="refreshFavoritePricesBtn" class="refresh-prices-btn" type="button">Refresh Favorites</button><div id="priceFetchInlineStatus" class="price-fetch-status price-fetch-inline-status">2P refresh idle.</div></div>
       <div class="field"><label for="lowGapMax">Within low %</label><input id="lowGapMax" type="number" min="0" step="0.5" placeholder="5 or 10" /></div>
-      <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="third_party_edge">2nd-party true edge</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
-      <div class="field"><label for="rowLimit">Rows</label><select id="rowLimit"><option value="0" selected>All gradual</option><option value="120">120 fastest</option><option value="240">240</option><option value="480">480</option></select></div>
+      <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="third_party_edge">2nd-party true edge</option><option value="third_party_low">2P lowest price</option><option value="demand_desc">Demand high first</option><option value="quality_desc">Quality high first</option><option value="flood_low">Flood low first</option><option value="flood_high">Flood high first</option><option value="expected_desc">Expected high first</option><option value="confidence_desc">Confidence high first</option><option value="value_edge_desc">Value edge high first</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
+      <div class="field"><label for="rowLimit">Rows</label><select id="rowLimit"><option value="120" selected>120 first</option><option value="240">240</option><option value="480">480</option><option value="0">All gradual</option></select></div>
       <div class="field"><label for="scoredFilter">Scored</label><select id="scoredFilter"><option value="">All</option><option value="true">Scored</option><option value="false">Unscored</option></select></div>
       <div class="field"><label>&nbsp;</label><button id="resetBtn">Reset</button></div>
     </section>
@@ -4375,6 +4906,8 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
             <option value="cost_desc">Buy price</option>
             <option value="pnl_desc">P/L value</option>
             <option value="pnl_pct_desc">P/L percent</option>
+            <option value="overpay_desc">2P overpay</option>
+            <option value="overpay_pct_desc">2P overpay %</option>
             <option value="account_asc">Account</option>
           </select>
           <button class="mini-btn" id="inventoryClearFiltersBtn" type="button">Clear</button>
@@ -4432,10 +4965,12 @@ def build_html(records: list[dict], series: dict[str, list[dict]]) -> str:
 
 <script id="records-json" type="application/json">__DATA_JSON__</script>
 <script id="series-json" type="application/json">__SERIES_JSON__</script>
+<script id="second-market-json" type="application/json">__SECOND_MARKET_JSON__</script>
 <script id="favorites-json" type="application/json">__FAVORITES_JSON__</script>
 <script>
 const records = JSON.parse(document.getElementById('records-json').textContent);
 const historySeries = JSON.parse(document.getElementById('series-json').textContent);
+const secondMarketSeries = JSON.parse(document.getElementById('second-market-json').textContent);
 const embeddedFavoriteIds = JSON.parse(document.getElementById('favorites-json').textContent);
 const verdictColors = __VERDICT_COLORS__;
 const verdictOrder = __VERDICT_ORDER__;
@@ -4447,6 +4982,7 @@ let modalHistoryOpen = false;
 let activeStickerModalId = null;
 let activeInventoryModalId = null;
 let priceFetchBusy = false;
+let priceFetchState = new Map();
 let inventoryItems = [];
 let inventoryViewMode = 'grid';
 let inventorySortMode = localStorage.getItem('cs2StickerInventorySort') || 'date_desc';
@@ -4458,6 +4994,9 @@ let topTrueEdgeIds = new Set();
 const RENDER_CHUNK_SIZE = 70;
 const USD_PER_TOKEN = 0.99 / 100;
 const TOKENS_PER_USD = 100 / 0.99;
+const MIN_REASONABLE_2P_USD = 0.10;
+const GENERIC_2P_OUTLIER_RATIO = 0.45;
+const TWO_P_STORAGE_KEY = 'cs2StickerFetched2PPricesV1';
 const DEFAULT_VARIANTS = new Set(['Foil', 'Holo']);
 const ALL_VARIANTS = ['Paper', 'Foil', 'Holo', 'Gold'];
 const recordById = new Map(records.map(r => [String(r.sticker_id), r]));
@@ -4533,10 +5072,13 @@ function csgoskinsFetchable(r) {
 function priceFetchButtonHtml(r, compact=false) {
   const id = favoriteId(r);
   const fetchable = csgoskinsFetchable(r);
+  const state = priceFetchState.get(id);
+  const stateAttr = state ? ` data-state="${esc(state.tone || '')}"` : '';
+  const label = state?.label || (compact ? '2P' : 'Fetch 2P');
   const title = fetchable
-    ? 'Try to refresh the CSGOSkins lowest price and update true edge.'
+    ? state?.message || 'Try to refresh the CSGOSkins lowest price and update true edge.'
     : 'Live CSGOSkins refresh is limited to Holo/Foil to avoid slow or excessive requests.';
-  return `<button class="fetch-price-btn ${compact ? 'compact' : ''}" type="button" data-fetch-price="${esc(id)}" ${fetchable ? '' : 'disabled'} title="${esc(title)}">${compact ? '2P' : 'Fetch 2P'}</button>`;
+  return `<button class="fetch-price-btn ${compact ? 'compact' : ''}" type="button" data-fetch-price="${esc(id)}"${stateAttr} ${fetchable ? '' : 'disabled'} title="${esc(title)}">${esc(label)}</button>`;
 }
 function tokenUsdPair(tokenValue, r) {
   const historicalTokens = num(tokenValue);
@@ -4594,6 +5136,38 @@ function priceRangeHtml(r, points=[]) {
     <div class="price-range-row high">${metricLabel('High')}<div><b>${esc(high.usd)}</b><small>${esc(high.tokens)} tokens</small></div></div>
   </div>`;
 }
+
+function inventoryItemsForRecord(r) {
+  const stickerId = String(r?.sticker_id || '').trim();
+  const sticker = String(r?.sticker || '').trim().toLowerCase();
+  const variant = normalizedVariant(r);
+  return inventoryItems.filter(item => {
+    const itemStickerId = String(item.sticker_id || '').trim();
+    if (stickerId && itemStickerId && itemStickerId === stickerId) return true;
+    return String(item.sticker || '').trim().toLowerCase() === sticker
+      && normalizedVariant(item) === variant;
+  });
+}
+
+function ownedInventoryPriceHtml(r) {
+  const owned = inventoryItemsForRecord(r);
+  if (!owned.length) return '';
+  const rows = owned.map((item, index) => {
+    const bought = boughtLabel(item);
+    const account = item.steam_account || 'No account';
+    const meta = [item.acquired_at || '', item.notes || ''].filter(Boolean).join(' | ');
+    return `<button class="owned-price-item" type="button" data-owned-inventory="${esc(item.inventory_id)}" title="Open this owned sticker in inventory">
+      <span class="owned-price-account">#${index + 1} ${esc(account)}</span>
+      <span class="owned-price-value">${esc(boughtShortLabel(item))}</span>
+      <span class="owned-price-meta">${esc(bought)}${meta ? ` | ${esc(meta)}` : ''}</span>
+    </button>`;
+  }).join('');
+  return `<div class="owned-price-panel" aria-label="Owned inventory copies">
+    <div class="owned-price-head"><span>Owned in inventory</span><b>${owned.length}</b></div>
+    <div class="owned-price-list">${rows}</div>
+  </div>`;
+}
+
 function usdToTokens(value) {
   const n = num(value);
   return n === null ? null : n * TOKENS_PER_USD;
@@ -4605,54 +5179,149 @@ function steamLowUsd(r) {
   if (lowTokens === null || currentTokens === null || currentTokens <= 0 || currentUsd === null) return null;
   return (lowTokens / currentTokens) * currentUsd;
 }
-function csgoskinsDiscountPct(r) {
-  const csgPrice = num(r?.csgoskins_low_usd);
-  const steamUsd = num(r?.usd_price);
-  if (csgPrice === null || steamUsd === null || steamUsd <= 0 || csgPrice <= 0) return null;
-  return ((steamUsd - csgPrice) / steamUsd) * 100;
-}
-function csgoskinsDiscountAbs(r) {
-  const csgPrice = num(r?.csgoskins_low_usd);
-  const steamUsd = num(r?.usd_price);
-  if (csgPrice === null || steamUsd === null || csgPrice <= 0) return null;
-  return steamUsd - csgPrice;
-}
-function csgoskinsTrueEdgePct(r) {
-  const csgPrice = num(r?.csgoskins_low_usd);
-  const lowUsd = steamLowUsd(r);
-  if (csgPrice === null || lowUsd === null || lowUsd <= 0 || csgPrice <= 0) return null;
-  return ((lowUsd - csgPrice) / lowUsd) * 100;
-}
-function csgoskinsTrueEdgeAbs(r) {
-  const csgPrice = num(r?.csgoskins_low_usd);
-  const lowUsd = steamLowUsd(r);
-  if (csgPrice === null || lowUsd === null || csgPrice <= 0) return null;
-  return lowUsd - csgPrice;
-}
 function marketplacePrice(r, key) {
   const markets = r?.csgoskins_markets && typeof r.csgoskins_markets === 'object' ? r.csgoskins_markets : {};
   if (key === 'CSFloat') return num(r?.csfloat_low_usd ?? markets.CSFloat);
   if (key === 'UUSkins') return num(r?.uuskins_low_usd ?? markets.UUSkins);
   return null;
 }
+function trustedThirdPartyLow(r) {
+  const named = [marketplacePrice(r, 'CSFloat'), marketplacePrice(r, 'UUSkins')]
+    .filter(v => v !== null && v >= MIN_REASONABLE_2P_USD);
+  const direct = num(r?.csgoskins_low_usd);
+  const candidates = [...named];
+  if (direct !== null && direct >= MIN_REASONABLE_2P_USD) {
+    if (!named.length || direct >= Math.min(...named) * GENERIC_2P_OUTLIER_RATIO) {
+      candidates.push(direct);
+    }
+  }
+  return candidates.length ? Math.min(...candidates) : null;
+}
+function csgoskinsDiscountPct(r) {
+  const csgPrice = trustedThirdPartyLow(r);
+  const steamUsd = num(r?.usd_price);
+  if (csgPrice === null || steamUsd === null || steamUsd <= 0 || csgPrice <= 0) return null;
+  return ((steamUsd - csgPrice) / steamUsd) * 100;
+}
+function csgoskinsDiscountAbs(r) {
+  const csgPrice = trustedThirdPartyLow(r);
+  const steamUsd = num(r?.usd_price);
+  if (csgPrice === null || steamUsd === null || csgPrice <= 0) return null;
+  return steamUsd - csgPrice;
+}
+function csgoskinsTrueEdgePct(r) {
+  const csgPrice = trustedThirdPartyLow(r);
+  const lowUsd = steamLowUsd(r);
+  if (csgPrice === null || lowUsd === null || lowUsd <= 0 || csgPrice <= 0) return null;
+  return ((lowUsd - csgPrice) / lowUsd) * 100;
+}
+function csgoskinsTrueEdgeAbs(r) {
+  const csgPrice = trustedThirdPartyLow(r);
+  const lowUsd = steamLowUsd(r);
+  if (csgPrice === null || lowUsd === null || csgPrice <= 0) return null;
+  return lowUsd - csgPrice;
+}
 function marketplaceSource(r, key) {
   const sources = r?.csgoskins_market_sources && typeof r.csgoskins_market_sources === 'object' ? r.csgoskins_market_sources : {};
   return sources[key] || '2P cache';
 }
+
+function marketplaceSearchName(r) {
+  return String(r?.market_hash_name || r?.sticker || '').trim();
+}
+
+function marketplaceUrl(r, key) {
+  const name = marketplaceSearchName(r);
+  const encoded = encodeURIComponent(name);
+  if (key === 'CSFloat' || key === 'csfloat') return `https://csfloat.com/search?sort_by=lowest_price&type=buy_now&market_hash_name=${encoded}`;
+  if (key === 'UUSkins' || key === 'uuskins') return `https://www.uuskins.com/items?search_word=${encoded}`;
+  return r?.csgoskins_url || '#';
+}
+
 function marketplaceChipHtml(r, key, label, icon, cls) {
   const price = marketplacePrice(r, key);
   const unavailable = price === null;
   const source = marketplaceSource(r, key);
+  const url = marketplaceUrl(r, key);
   const title = unavailable
-    ? `${label} price was not found in the cached CSGOSkins/SkinSniper offer data.`
-    : `${label} lowest offer parsed from ${source}.`;
-  return `<a class="store-chip ${cls} ${unavailable ? 'unavailable' : ''}" href="${esc(r.csgoskins_url || '#')}" target="_blank" rel="noopener" title="${esc(title)}"><span class="store-icon">${esc(icon)}</span><b>${unavailable ? '-' : money(price)}</b></a>`;
+    ? `${label} price was not found in the cached CSGOSkins/SkinSniper offer data. Opens ${label} search.`
+    : `${label} lowest offer parsed from ${source}. Opens ${label} search.`;
+  return `<a class="store-chip ${cls} ${unavailable ? 'unavailable' : ''}" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(title)}"><span class="store-icon">${esc(icon)}</span><b>${unavailable ? '-' : money(price)}</b></a>`;
 }
 function marketplaceOffersHtml(r) {
   if (!csgoskinsFetchable(r)) return '';
   return `<div class="store-offers" aria-label="Marketplace offer prices parsed from CSGOSkins/SkinSniper">
     ${marketplaceChipHtml(r, 'CSFloat', 'CSFloat', 'CF', 'csfloat')}
     ${marketplaceChipHtml(r, 'UUSkins', 'UUSkins', 'UU', 'uuskins')}
+  </div>`;
+}
+
+function secondMarketStats(r, key) {
+  const points = secondMarketPointsFor(r, key);
+  if (!points.length) {
+    const current = key === 'csfloat' ? marketplacePrice(r, 'CSFloat') : marketplacePrice(r, 'UUSkins');
+    return {
+      current,
+      previous:null,
+      low:current,
+      count:current === null ? 0 : 1,
+      lastTime:'',
+      lowTime:''
+    };
+  }
+  const currentPoint = points[points.length - 1];
+  const previousPoint = points.length > 1 ? points[points.length - 2] : null;
+  let lowPoint = points[0];
+  points.forEach(point => {
+    if (point.price !== null && (lowPoint.price === null || point.price < lowPoint.price)) lowPoint = point;
+  });
+  return {
+    current:currentPoint.price,
+    previous:previousPoint ? previousPoint.price : null,
+    low:lowPoint ? lowPoint.price : null,
+    count:points.length,
+    lastTime:currentPoint.time || '',
+    lowTime:lowPoint ? (lowPoint.time || '') : ''
+  };
+}
+
+function secondMarketPriceCell(label, value, cls='') {
+  return `<span class="second-market-price-cell ${cls}"><span>${esc(label)}</span><b>${value === null ? '-' : money(value)}</b></span>`;
+}
+
+function secondMarketPriceRowHtml(r, key, label, icon, cls) {
+  const stats = secondMarketStats(r, key);
+  const url = marketplaceUrl(r, key);
+  if (!stats.count) {
+    return `<a class="second-market-price-row ${cls}" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(label)} has no saved price history yet. Opens ${esc(label)} search. Use Fetch 2P for this sticker.">
+      <span class="second-market-price-source"><span class="store-icon">${esc(icon)}</span>${esc(label)}</span>
+      ${secondMarketPriceCell('Now', null)}
+      ${secondMarketPriceCell('Prev', null, 'prev')}
+      ${secondMarketPriceCell('Low', null, 'low')}
+    </a>`;
+  }
+  const tip = [
+    `${label} saved 2P history`,
+    `Current: ${money(stats.current)}`,
+    `Previous: ${money(stats.previous)}`,
+    `Lowest saved: ${money(stats.low)}`,
+    `${stats.count} saved point${stats.count === 1 ? '' : 's'}`,
+    stats.lastTime ? `Last: ${String(stats.lastTime).replace('T', ' ').replace('.000Z', 'Z')}` : '',
+    stats.lowTime ? `Low: ${String(stats.lowTime).replace('T', ' ').replace('.000Z', 'Z')}` : ''
+  ].filter(Boolean).join('\n');
+  return `<a class="second-market-price-row ${cls}" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(tip)}">
+    <span class="second-market-price-source"><span class="store-icon">${esc(icon)}</span>${esc(label)}</span>
+    ${secondMarketPriceCell('Now', stats.current)}
+    ${secondMarketPriceCell('Prev', stats.previous, 'prev')}
+    ${secondMarketPriceCell('Low', stats.low, 'low')}
+  </a>`;
+}
+
+function secondMarketPriceGridHtml(r) {
+  if (!csgoskinsFetchable(r)) return '';
+  return `<div class="second-market-price-grid" aria-label="Saved second-market current, previous and low prices">
+    ${secondMarketPriceRowHtml(r, 'csfloat', 'CSFloat', 'CF', 'cf')}
+    ${secondMarketPriceRowHtml(r, 'uuskins', 'UUSkins', 'UU', 'uu')}
   </div>`;
 }
 function isCsgoskinsOpportunity(r) {
@@ -4666,31 +5335,31 @@ function csgoskinsOpportunityTagHtml(r) {
   return `<div class="price-opportunity-tag" title="CSGOSkins is materially cheaper than the collected Steam historical low. Verify liquidity, fees and seller reputation before buying.">True edge ${fmt(csgoskinsTrueEdgePct(r), 0)}% (${money(csgoskinsTrueEdgeAbs(r))})</div>`;
 }
 function csgoskinsTrueEdgeCardHtml(r) {
-  const csgPrice = num(r.csgoskins_low_usd);
+  const csgPrice = trustedThirdPartyLow(r);
   const lowUsd = steamLowUsd(r);
   if (csgPrice === null || lowUsd === null) {
-    return `<div class="market-price-card true-edge unavailable" title="Needs both CSGOSkins price and collected Steam historical low."><span>True Edge</span><b>-</b><small>vs Steam low unavailable</small></div>`;
+    return `<div class="market-price-card true-edge unavailable" title="Needs both trusted 2P price and collected Steam historical low."><span>True Edge</span><b>-</b><small>vs Steam low unavailable</small></div>`;
   }
   const edgePct = csgoskinsTrueEdgePct(r);
   const edgeAbs = csgoskinsTrueEdgeAbs(r);
   const cls = edgePct === null || Math.abs(edgePct) < 0.5 ? 'flat' : edgePct > 0 ? 'pos' : 'neg';
   const sign = edgePct !== null && edgePct > 0 ? '+' : '';
   const cardClass = edgePct !== null && edgePct > 0 ? ' deal' : edgePct !== null && edgePct < -5 ? ' expensive' : '';
-  return `<div class="market-price-card true-edge${cardClass}" title="True edge compares CSGOSkins lowest price with the collected Steam historical low for this sticker. Positive means CSGOSkins is below the Steam low."><span>True Edge</span><b class="${cls}">${sign}${fmt(edgePct, 1)}%</b><small>${money(edgeAbs)} vs Steam low ${money(lowUsd)}</small></div>`;
+  return `<div class="market-price-card true-edge${cardClass}" title="True edge compares the trusted 2P low with the collected Steam historical low for this sticker. Positive means 2P is below the Steam low."><span>True Edge</span><b class="${cls}">${sign}${fmt(edgePct, 1)}%</b><small>${money(edgeAbs)} vs Steam low ${money(lowUsd)}</small></div>`;
 }
 function csgoskinsPriceHtml(r) {
-  const csgPrice = num(r.csgoskins_low_usd);
+  const csgPrice = trustedThirdPartyLow(r);
   const steamUsd = num(r.usd_price);
   const url = r.csgoskins_url || '#';
   if (csgPrice === null) {
-    return `<a class="market-price-card skins unavailable" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(r.csgoskins_status || 'No cached CSGOSkins price')}"><span>CSGOSkins</span><b>Check</b><small>price unavailable</small></a>`;
+    return `<a class="market-price-card skins unavailable" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(r.csgoskins_status || 'No trusted 2P price cached')}"><span>2P Low</span><b>Check</b><small>price unavailable</small></a>`;
   }
   const tokenEquivalent = usdToTokens(csgPrice);
   const discount = csgoskinsDiscountPct(r);
   const diffClass = discount === null || Math.abs(discount) < 0.5 ? 'flat' : discount > 0 ? 'pos' : 'neg';
   const diffText = discount === null ? 'compare live' : discount > 0 ? `${fmt(discount, 1)}% cheaper` : `${fmt(Math.abs(discount), 1)}% higher`;
   const cardClass = isCsgoskinsOpportunity(r) ? ' deal' : discount !== null && discount < -5 ? ' expensive' : '';
-  return `<a class="market-price-card skins${cardClass}" href="${esc(url)}" target="_blank" rel="noopener" title="Open CSGOSkins comparison. Positive discount means CSGOSkins is cheaper than the dashboard Steam price."><span>CSGOSkins</span><b>${money(csgPrice)}</b><small>${tokens(tokenEquivalent)} token eq. <em class="${diffClass}">${diffText}</em></small></a>`;
+  return `<a class="market-price-card skins${cardClass}" href="${esc(url)}" target="_blank" rel="noopener" title="Open CSGOSkins comparison. Positive discount means the trusted 2P low is cheaper than the dashboard Steam price."><span>2P Low</span><b>${money(csgPrice)}</b><small>${tokens(tokenEquivalent)} token eq. <em class="${diffClass}">${diffText}</em></small></a>`;
 }
 function priceCompareHtml(r) {
   const steamUrl = r.steam_market_url || '#';
@@ -4700,18 +5369,20 @@ function priceCompareHtml(r) {
     ${csgoskinsPriceHtml(r)}
     ${csgoskinsTrueEdgeCardHtml(r)}
     ${marketplaceOffersHtml(r)}
+    ${secondMarketPriceGridHtml(r)}
   </div>`;
 }
 function gridPriceStackHtml(r) {
   const high = tokenUsdPair(r.hist_max, r);
+  const thirdPartyLow = trustedThirdPartyLow(r);
   const trueEdge = csgoskinsTrueEdgePct(r);
   const trueEdgeClass = trueEdge === null || Math.abs(trueEdge) < 0.5 ? 'flat' : trueEdge > 0 ? 'pos' : 'neg';
   const trueEdgeText = trueEdge === null ? '-' : `${trueEdge > 0 ? '+' : ''}${fmt(trueEdge, 0)}%`;
-  return `<span class="grid-prices" title="Current Steam, Steam low, Steam high, CSGOSkins lowest, and true edge versus Steam low.">
+  return `<span class="grid-prices" title="Current Steam, Steam low, Steam high, trusted 2P low, and true edge versus Steam low.">
     <span><small>Steam</small><b>${money(r.usd_price)}</b></span>
     <span><small>Low</small><b>${money(steamLowUsd(r))}</b></span>
     <span><small>High</small><b>${esc(high.usd)}</b></span>
-    <span><small>2P</small><b>${money(r.csgoskins_low_usd)}</b></span>
+    <span><small>2P</small><b>${money(thirdPartyLow)}</b></span>
     <span><small>Edge</small><b class="${trueEdgeClass}">${trueEdgeText}</b></span>
   </span>`;
 }
@@ -4721,8 +5392,90 @@ function recordForFetchId(id) {
     favoriteId(r) === key ||
     String(r.sticker_id || '') === key ||
     String(r.market_hash_name || '') === key ||
-    String(r.sticker || '') === key
+    String(r.sticker || '') === key ||
+    String(r.csgoskins_url || '') === key
   ) || null;
+}
+
+function readTwoPStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TWO_P_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function twoPStoreKey(item) {
+  return String(item?.csgoskins_url || item?.sticker_id || item?.market_hash_name || item?.sticker || item?.id || '').trim();
+}
+
+function persistFetchedCsgoskinsItems(items) {
+  if (!Array.isArray(items) || !items.length) return 0;
+  const store = readTwoPStore();
+  let saved = 0;
+  items.forEach(item => {
+    const key = twoPStoreKey(item);
+    if (!key) return;
+    store[key] = {
+      ...item,
+      saved_at: Math.floor(Date.now() / 1000)
+    };
+    saved += 1;
+  });
+  try {
+    localStorage.setItem(TWO_P_STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    return 0;
+  }
+  return saved;
+}
+
+function hydratePersistedCsgoskinsPrices() {
+  const store = readTwoPStore();
+  let applied = 0;
+  Object.values(store).forEach(item => {
+    if (applyFetchedCsgoskinsPrice(item)) applied += 1;
+  });
+  return applied;
+}
+
+async function hydrateServerCsgoskinsCache() {
+  try {
+    const response = await fetch('csgoskins_prices.json', {cache:'no-store'});
+    if (!response.ok) return;
+    const cache = await response.json();
+    if (!cache || typeof cache !== 'object') return;
+    const items = Object.entries(cache).map(([url, entry]) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const r = recordForFetchId(url);
+      const markets = entry.markets && typeof entry.markets === 'object' ? entry.markets : {};
+      return {
+        ...entry,
+        id:r ? favoriteId(r) : url,
+        sticker_id:r?.sticker_id || entry.sticker_id || '',
+        sticker:r?.sticker || entry.sticker || '',
+        variant:r ? normalizedVariant(r) : entry.variant || '',
+        market_hash_name:r?.market_hash_name || entry.market_hash_name || '',
+        csgoskins_url:url,
+        price:entry.price,
+        markets,
+        csfloat_low_usd:markets.CSFloat,
+        uuskins_low_usd:markets.UUSkins,
+      };
+    }).filter(Boolean);
+    let applied = 0;
+    items.forEach(item => {
+      if (applyFetchedCsgoskinsPrice(item)) applied += 1;
+    });
+    if (applied) {
+      persistFetchedCsgoskinsItems(items);
+      computeSignalSets();
+      applyFiltersPreservingScroll();
+    }
+  } catch {
+    // Cache hydration is optional; live/API fetch still reports visible errors.
+  }
 }
 function priceFetchPayload(r) {
   return {
@@ -4771,6 +5524,22 @@ function applyFetchedCsgoskinsPrice(item) {
   r.uuskins_low_usd = num(item.uuskins_low_usd ?? markets.UUSkins);
   if (item.status) r.csgoskins_status = String(item.status);
   if (item.last_error) r.csgoskins_last_error = String(item.last_error);
+  const fetchedAt = num(item.fetched_at) || Math.floor(Date.now() / 1000);
+  if (r.sticker_id && (r.csfloat_low_usd !== null || r.uuskins_low_usd !== null || r.csgoskins_low_usd !== null)) {
+    const list = secondMarketSeries[r.sticker_id] || [];
+    const point = {
+      time: new Date(fetchedAt * 1000).toISOString(),
+      fetched_at: fetchedAt,
+      low: r.csgoskins_low_usd,
+      csfloat: r.csfloat_low_usd,
+      uuskins: r.uuskins_low_usd,
+      source: 'api'
+    };
+    const key = `${point.fetched_at}|${point.low}|${point.csfloat}|${point.uuskins}`;
+    const exists = list.some(p => `${p.fetched_at}|${p.low}|${p.csfloat}|${p.uuskins}` === key);
+    if (!exists) list.push(point);
+    secondMarketSeries[r.sticker_id] = list.slice(-80);
+  }
   return true;
 }
 function refreshOpenStickerModal() {
@@ -4781,11 +5550,12 @@ function refreshOpenStickerModal() {
   const item = activeInventoryModalId ? inventoryItems.find(row => row.inventory_id === activeInventoryModalId) : null;
   if (r) content.innerHTML = stickerDetailsHtml(r, item || null);
 }
-async function fetchCsgoskinsPricesFor(rows, label='selected stickers') {
+async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerButton=null) {
   if (priceFetchBusy) {
     setPriceFetchStatus('A 2P price refresh is already running.', 'warn');
     return;
   }
+  const originalButtonText = triggerButton ? triggerButton.textContent : '';
   const unique = [];
   const seen = new Set();
   rows.forEach(r => {
@@ -4804,6 +5574,10 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers') {
   priceFetchBusy = true;
   document.body.classList.add('price-fetching');
   setPriceFetchButtonsBusy(true);
+  if (triggerButton) {
+    triggerButton.disabled = true;
+    triggerButton.textContent = 'Fetching...';
+  }
   setPriceFetchStatus(`Refreshing ${eligible.length} ${label}...`, 'busy');
   try {
     const response = await fetch('/api/csgoskins-price', {
@@ -4818,6 +5592,7 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers') {
     const payload = await response.json();
     const items = Array.isArray(payload.items) ? payload.items : [];
     items.forEach(applyFetchedCsgoskinsPrice);
+    const saved = persistFetchedCsgoskinsItems(items);
     computeSignalSets();
     applyFiltersPreservingScroll();
     refreshOpenStickerModal();
@@ -4840,13 +5615,17 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers') {
       `UU ${uuskins}`,
       failed ? `${failed} failed${errorKinds ? `: ${errorKinds}` : ''}` : ''
     ].filter(Boolean).join(', ');
-    setPriceFetchStatus(`2P refresh done: ${priced}/${items.length} priced${details ? ` (${details})` : ''}.`, failed ? 'warn' : 'ok');
+    setPriceFetchStatus(`2P refresh done: ${priced}/${items.length} priced${details ? ` (${details})` : ''}. Saved ${saved} reload cache row${saved === 1 ? '' : 's'}.`, failed ? 'warn' : 'ok');
   } catch (error) {
     setPriceFetchStatus(`2P refresh failed: ${error.message || error}. Run python inventory_server.py and open the localhost dashboard URL.`, 'error');
   } finally {
     priceFetchBusy = false;
     document.body.classList.remove('price-fetching');
     setPriceFetchButtonsBusy(false);
+    if (triggerButton) {
+      triggerButton.disabled = false;
+      triggerButton.textContent = originalButtonText || 'Fetch 2P';
+    }
   }
 }
 function lowGapHtml(r) {
@@ -5103,6 +5882,89 @@ function sparkline(rawPoints, r, width=260, height=88) {
   return `<svg class="spark" viewBox="0 0 ${width} ${height}" aria-label="price trend">${label}${rangeLabels}<line class="spark-axis" x1="9" y1="${height - bottomPad}" x2="${width - 9}" y2="${height - bottomPad}"></line><path class="area" d="${area}" fill="${stroke}"></path><path class="line" d="${line}" stroke="${stroke}"${dash}></path>${pointDots}</svg>`;
 }
 
+function secondMarketPointsFor(r, key) {
+  return (secondMarketSeries[r.sticker_id] || [])
+    .map(point => ({
+      price: num(point[key]),
+      low: num(point.low),
+      time: point.time || '',
+      fetched_at: point.fetched_at,
+      source: point.source || '2P history'
+    }))
+    .filter(point => point.price !== null);
+}
+
+function secondMarketChartFor(r, key, label, cls, width=230, height=54) {
+  let points = secondMarketPointsFor(r, key);
+  if (!points.length) {
+    return `<div class="second-market-chart ${cls}"><header><span>${esc(label)}</span><small>-</small></header><div class="second-market-empty">2P history pending</div></div>`;
+  }
+  if (points.length === 1) {
+    points = [{...points[0], synthetic:true}, {...points[0], synthetic:true}];
+  }
+  const prices = points.map(p => Number(p.price)).filter(Number.isFinite);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const span = Math.max(max - min, 1e-9);
+  const topPad = 8;
+  const bottomPad = 9;
+  const coords = points.map((p, i) => {
+    const x = 8 + i * ((width - 16) / Math.max(points.length - 1, 1));
+    const y = height - bottomPad - ((Number(p.price) - min) / span) * (height - topPad - bottomPad);
+    return [x, y];
+  });
+  const line = coords.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const area = `${line} L${coords[coords.length - 1][0].toFixed(1)},${height - bottomPad} L${coords[0][0].toFixed(1)},${height - bottomPad} Z`;
+  const latest = prices[prices.length - 1];
+  const prior = prices.length > 1 ? prices[prices.length - 2] : null;
+  const change = prior && prior > 0 ? ((latest - prior) / prior) * 100 : null;
+  const color = cls === 'cf' ? '#50aeff' : '#ffd64c';
+  const trendColor = change === null || Math.abs(change) < 0.5 ? '#bac6d6' : change > 0 ? '#5ee592' : '#fb7185';
+  const dots = coords.map(([x, y], i) => {
+    const p = points[i];
+    const tip = [
+      `${r.sticker}`,
+      `${label}: ${money(p.price)}`,
+      p.low !== null ? `Trusted 2P low: ${money(p.low)}` : '',
+      p.time ? String(p.time).replace('T', ' ').replace('.000Z', 'Z') : '',
+      p.source || '2P history'
+    ].filter(Boolean).join('\n');
+    return `<circle class="spark-point" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.8" fill="${color}" stroke="#080d14" stroke-width="1.6" data-tip="${esc(tip)}"></circle>`;
+  }).join('');
+  const changeText = change === null ? `${money(latest)}` : `${money(latest)} ${change > 0 ? '+' : ''}${fmt(change, 1)}%`;
+  return `<div class="second-market-chart ${cls}">
+    <header><span>${esc(label)}</span><small style="color:${trendColor}">${esc(changeText)}</small></header>
+    <svg class="second-market-spark" viewBox="0 0 ${width} ${height}" aria-label="${esc(label)} second market trend">
+      <path class="area" d="${area}" fill="${color}"></path>
+      <path class="line" d="${line}" stroke="${color}"></path>
+      ${dots}
+    </svg>
+  </div>`;
+}
+
+function secondMarketChartsHtml(r) {
+  const points = secondMarketSeries[r.sticker_id] || [];
+  if (!points.length && !csgoskinsFetchable(r)) return '';
+  return `<div class="second-market-charts" aria-label="Second-market trend">
+    ${secondMarketChartFor(r, 'csfloat', 'CSFloat', 'cf')}
+    ${secondMarketChartFor(r, 'uuskins', 'UUSkins', 'uu')}
+  </div>`;
+}
+
+function secondMarketSignalHtml(r) {
+  const wait = num(r.second_market_wait_penalty);
+  const edge = num(r.second_market_true_edge_pct);
+  const change = num(r.second_market_change_pct);
+  if (wait !== null && wait >= 0.55) {
+    const reason = change !== null ? `2P falling ${pct(change, 1)}` : '2P still falling';
+    return `<span class="second-market-signal wait" title="The off-market price trend is still making lower lows, so the analyzer reduces buy urgency.">${esc(reason)} · wait</span>`;
+  }
+  if (edge !== null && edge > 8) {
+    return `<span class="second-market-signal edge" title="Trusted 2P price is below the collected Steam historical low.">${esc(`2P true edge +${fmt(edge, 1)}%`)}</span>`;
+  }
+  return '';
+}
+
 function rowHtml(r) {
   const points = historySeries[r.sticker_id] || [];
   const link = r.item_url || '#';
@@ -5142,6 +6004,8 @@ function rowHtml(r) {
       <div class="price-main">${money(r.usd_price)}</div>
       <div class="price-sub">${tokens(r.price_tokens)} tokens</div>
       ${priceCompareHtml(r)}
+      ${ownedInventoryPriceHtml(r)}
+      ${secondMarketSignalHtml(r)}
       ${csgoskinsOpportunityTagHtml(r)}
       ${lowGapHtml(r)}
       ${priceRangeHtml(r, points)}
@@ -5175,6 +6039,7 @@ function rowHtml(r) {
         <div class="metric-row">${metricLabel('Change')}<b class="${pctClass(changeValue)}">${pct(changeValue,1)}</b></div>
       </div>
       ${sparkline(points, r)}
+      ${secondMarketChartsHtml(r)}
     </td>
     <td data-label="Notes">
       <div class="note-block">
@@ -5246,11 +6111,21 @@ function inventoryContextHtml(item, r) {
     : pnl.tokenPct !== null
       ? `${pnl.tokenPct >= 0 ? '+' : ''}${fmt(pnl.tokenPct, 1)}% tokens`
       : '-';
+  const guard = inventoryOverpayInfo(item, r);
+  const guardText = guard
+    ? guard.pct >= 8
+      ? `Paid ${money(guard.diff)} above 2P low`
+      : guard.pct <= -8
+        ? `Paid ${money(Math.abs(guard.diff))} below 2P low`
+        : 'Near current 2P low'
+    : '2P comparison unavailable';
+  const guardClass = guard ? pnlClass(-guard.pct) : 'flat';
   return `<div class="inventory-context-panel" aria-label="Inventory purchase context">
     <div class="inventory-context-item"><span>Account</span><b>${esc(item.steam_account || '-')}</b><small>${esc(item.acquired_at || 'No buy date')}</small></div>
     <div class="inventory-context-item"><span>Buying Price</span><b>${esc(boughtLabel(item))}</b><small>${esc(metricDescriptions['Known Cost'])}</small></div>
     <div class="inventory-context-item"><span>Current Value</span><b>${money(pnl.currentUsd)}</b><small>${tokens(pnl.currentTokens)} tokens now</small></div>
     <div class="inventory-context-item"><span>P/L</span><b class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}">${esc(pnlValue)}</b><small>${esc(metricDescriptions['P/L'])}</small></div>
+    <div class="inventory-context-item"><span>Buy Guard</span><b class="inventory-pnl ${guardClass}">${esc(guardText)}</b><small>${guard ? `${fmt(guard.pct, 1)}% vs trusted 2P low ${money(guard.best)}` : 'Refresh 2P prices first'}</small></div>
   </div>`;
 }
 
@@ -5316,6 +6191,10 @@ function stickerDetailsHtml(r, inventoryItem=null) {
         <div class="modal-section">
           <h3>Trend</h3>
           ${sparkline(points, r, 420, 118)}
+        </div>
+        <div class="modal-section">
+          <h3>2P Trend</h3>
+          ${secondMarketChartsHtml(r)}
         </div>
       </div>
       <div class="modal-section modal-note">
@@ -5414,6 +6293,30 @@ function applySortPreset(sortPreset) {
   if (sortPreset === 'third_party_edge') {
     sortKey = 'third_party_discount_pct';
     sortDir = -1;
+  } else if (sortPreset === 'third_party_low') {
+    sortKey = 'third_party_low_usd';
+    sortDir = 1;
+  } else if (sortPreset === 'demand_desc') {
+    sortKey = 'demand_momentum_score';
+    sortDir = -1;
+  } else if (sortPreset === 'quality_desc') {
+    sortKey = 'quality_score';
+    sortDir = -1;
+  } else if (sortPreset === 'flood_low') {
+    sortKey = 'flood_risk_score';
+    sortDir = 1;
+  } else if (sortPreset === 'flood_high') {
+    sortKey = 'flood_risk_score';
+    sortDir = -1;
+  } else if (sortPreset === 'expected_desc') {
+    sortKey = 'expected_return_pct';
+    sortDir = -1;
+  } else if (sortPreset === 'confidence_desc') {
+    sortKey = 'prediction_confidence';
+    sortDir = -1;
+  } else if (sortPreset === 'value_edge_desc') {
+    sortKey = 'value_edge_score';
+    sortDir = -1;
   } else if (sortPreset === 'current_low') {
     sortKey = 'current_low';
     sortDir = -1;
@@ -5429,6 +6332,14 @@ function applySortPreset(sortPreset) {
   }
   const sortLabels = {
     third_party_edge:'2nd-party true edge',
+    third_party_low:'2P lowest price',
+    demand_desc:'demand high first',
+    quality_desc:'quality high first',
+    flood_low:'flood low first',
+    flood_high:'flood high first',
+    expected_desc:'expected return high first',
+    confidence_desc:'confidence high first',
+    value_edge_desc:'value edge high first',
     current_low:'current low',
     low_gap:'distance from low',
     price_asc:'price low to high',
@@ -5449,11 +6360,19 @@ function compareValues(a, b) {
     if (bn === null) return 1;
     return an - bn;
   }
+  if (sortKey === 'third_party_low_usd') {
+    const an = trustedThirdPartyLow(a);
+    const bn = trustedThirdPartyLow(b);
+    if (an === null && bn === null) return Number(a.priority_rank || 9999) - Number(b.priority_rank || 9999);
+    if (an === null) return 1;
+    if (bn === null) return -1;
+    return an - bn;
+  }
   const av = a[sortKey], bv = b[sortKey];
   const an = num(av), bn = num(bv);
   if (an !== null || bn !== null) {
-    if (an === null) return 1;
-    if (bn === null) return -1;
+    if (an === null) return sortDir === -1 ? -1 : 1;
+    if (bn === null) return sortDir === -1 ? 1 : -1;
     return an - bn;
   }
   return String(av ?? '').localeCompare(String(bv ?? ''));
@@ -5738,6 +6657,8 @@ function inventorySortValue(item, key) {
   if (key === 'cost') return pnl.boughtUsd ?? -Infinity;
   if (key === 'pnl') return pnl.usdAbs ?? -Infinity;
   if (key === 'pnl_pct') return pnl.usdPct ?? pnl.tokenPct ?? -Infinity;
+  if (key === 'overpay') return inventoryOverpayInfo(item, r)?.diff ?? -Infinity;
+  if (key === 'overpay_pct') return inventoryOverpayInfo(item, r)?.pct ?? -Infinity;
   return 0;
 }
 
@@ -5822,6 +6743,26 @@ function boughtShortLabel(item) {
   return '-';
 }
 
+function inventoryOverpayInfo(item, r) {
+  const paid = num(item.bought_usd);
+  const best = trustedThirdPartyLow(r);
+  if (paid === null || best === null || best <= 0) return null;
+  const diff = paid - best;
+  return {paid, best, diff, pct: (diff / best) * 100};
+}
+
+function inventoryOverpayBadgeHtml(item, r, compact=false) {
+  const info = inventoryOverpayInfo(item, r);
+  if (!info) return '';
+  if (info.pct >= 8) {
+    return `<span class="inventory-guard-badge danger" title="Your saved buy price is ${money(info.diff)} above the current trusted 2P low of ${money(info.best)}. Compare stores before adding more.">${compact ? 'Over 2P' : `Paid +${fmt(info.pct, 1)}% vs 2P`}</span>`;
+  }
+  if (info.pct <= -8) {
+    return `<span class="inventory-guard-badge good" title="Your saved buy price is ${money(Math.abs(info.diff))} below the current trusted 2P low of ${money(info.best)}.">${compact ? 'Below 2P' : `Paid ${fmt(info.pct, 1)}% vs 2P`}</span>`;
+  }
+  return `<span class="inventory-guard-badge neutral" title="Your saved buy price is close to the current trusted 2P low of ${money(info.best)}.">${compact ? 'Fair 2P' : 'Near 2P low'}</span>`;
+}
+
 function inventoryItemListHtml(item, index) {
   const r = inventoryRecord(item);
   const pnl = inventoryPnl(item, r);
@@ -5832,13 +6773,13 @@ function inventoryItemListHtml(item, index) {
   const pnlValue = pnl.usdPct !== null ? `${pnl.usdAbs >= 0 ? '+' : ''}${money(pnl.usdAbs)} (${pnl.usdPct >= 0 ? '+' : ''}${fmt(pnl.usdPct,1)}%)`
     : pnl.tokenPct !== null ? `${pnl.tokenPct >= 0 ? '+' : ''}${fmt(pnl.tokenPct,1)}% tokens`
     : '-';
-  return `<tr class="${selected ? 'inventory-selected-row' : ''} ${rarityClass(r || item)}" ${rarityStyleAttr(r || item)}>
+  return `<tr class="${selected ? 'inventory-selected-row' : ''} ${rarityClass(r || item)}" ${rarityStyleAttr(r || item)} data-inventory-row="${esc(item.inventory_id)}" tabindex="-1">
     <td data-label="Select" class="inventory-select-cell"><input class="inventory-select" type="checkbox" data-select-inventory="${esc(item.inventory_id)}" ${selected ? 'checked' : ''} aria-label="Select ${esc(title)}" /></td>
     <td data-label="Sticker"><div class="inventory-sticker-cell"><img src="${esc(image)}" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'" /><div><div class="inventory-item-title">#${index + 1} ${esc(title)}</div><div class="inventory-item-sub">${esc(r?.variant || item.variant || '-')} | ${esc(r?.team || r?.player_name || r?.team_name || '')}</div></div></div></td>
     <td data-label="Account">${esc(item.steam_account || '-')}</td>
     <td data-label="Bought">${esc(boughtLabel(item))}<div class="inventory-item-sub">${esc(item.acquired_at || '')}</div></td>
     <td data-label="Current">${money(pnl.currentUsd)}<div class="inventory-item-sub">${tokens(pnl.currentTokens)} tokens</div></td>
-    <td data-label="P/L"><span class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlValue)}</span></td>
+    <td data-label="P/L"><span class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlValue)}</span><div class="inventory-item-sub">${inventoryOverpayBadgeHtml(item, r)}</div></td>
     <td data-label="Market">${market}<div class="inventory-item-sub">${marketCounterHtml(r, 'mini')} | Low ${tokens(r?.hist_min)} | High ${tokens(r?.hist_max)}</div></td>
     <td data-label="Actions"><div class="inventory-actions"><button class="mini-btn" type="button" data-inventory-details="${esc(item.inventory_id)}">Details</button><button class="mini-btn" type="button" data-edit-inventory="${esc(item.inventory_id)}">Edit</button><button class="mini-btn danger" type="button" data-delete-inventory="${esc(item.inventory_id)}">Delete</button></div></td>
   </tr>`;
@@ -5867,7 +6808,7 @@ function inventoryItemCardHtml(item, index) {
         <span class="inventory-cost-pill" title="${esc(`Known cost: ${bought}`)}"><span>Cost</span><b>${esc(boughtShortLabel(item))}</b></span>
         <span class="inventory-pnl-pill inventory-pnl ${pnlCls}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlText)}</span>
       </div>
-      <div class="inventory-card-counter">${marketCounterHtml(r, 'mini')}</div>
+      <div class="inventory-card-counter">${marketCounterHtml(r, 'mini')} ${inventoryOverpayBadgeHtml(item, r, true)}</div>
     </div>
     <div class="inventory-card-subrow">
       <span title="${esc(bought)}">Bought ${esc(bought)}</span>
@@ -5881,9 +6822,18 @@ function portfolioKey(r) {
   return String(r?.portfolio_group || r?.team_name || r?.team || r?.player_name || r?.sticker || '').trim() || 'Unknown';
 }
 
+function portfolioExposureKey(r) {
+  return `${normalizedVariant(r)} | ${portfolioKey(r)}`;
+}
+
 function goodBuyCandidate(r) {
   const verdictRank = verdictOrder[r.verdict] ?? 99;
   return verdictRank <= 4 && String(r.suggested_size || '') !== '0' && Number(r.priority_score || 0) > 0;
+}
+
+function watchCandidate(r) {
+  const verdict = String(r.verdict || '');
+  return ['SCORE/WAIT', 'WAIT FOR DROP'].includes(verdict) && Number(r.priority_score || 0) > 0;
 }
 
 function normalizedVariant(r) {
@@ -5942,7 +6892,7 @@ function renderPortfolioFocus() {
   inventoryItems.forEach(item => {
     const r = inventoryRecord(item);
     if (!r) return;
-    const key = portfolioKey(r);
+    const key = portfolioExposureKey(r);
     groupCounts.set(key, (groupCounts.get(key) || 0) + 1);
     heldIds.set(String(r.sticker_id), (heldIds.get(String(r.sticker_id)) || 0) + 1);
   });
@@ -5953,17 +6903,27 @@ function renderPortfolioFocus() {
   const anyFilterActive = activeFilterIds.some(id => String($(id)?.value || '').trim());
   const variants = activeVariants.length ? activeVariants : ALL_VARIANTS;
   const sourceRows = anyFilterActive ? filtered : records;
-  const sortedCandidate = (variant) => sourceRows
-    .filter(r => normalizedVariant(r) === variant)
-    .filter(goodBuyCandidate)
-    .map(r => ({r, exposure:groupCounts.get(portfolioKey(r)) || 0, held:heldIds.get(String(r.sticker_id)) || 0}))
-    .filter(item => item.held === 0)
-    .sort((a, b) => (a.exposure - b.exposure) || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999)))
-    .slice(0, 5);
+  const sortedCandidate = (variant) => {
+    const base = sourceRows
+      .filter(r => normalizedVariant(r) === variant)
+      .map(r => ({r, exposure:groupCounts.get(portfolioExposureKey(r)) || 0, held:heldIds.get(String(r.sticker_id)) || 0}))
+      .filter(item => item.held === 0);
+    const buys = base
+      .filter(item => goodBuyCandidate(item.r))
+      .sort((a, b) => (a.exposure - b.exposure) || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999)))
+      .slice(0, 5)
+      .map(item => ({...item, mode:'buy'}));
+    if (buys.length) return buys;
+    return base
+      .filter(item => watchCandidate(item.r))
+      .sort((a, b) => (Number(b.r.priority_score || 0) - Number(a.r.priority_score || 0)) || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999)))
+      .slice(0, 5)
+      .map(item => ({...item, mode:'watch'}));
+  };
 
   $('portfolioFocusHint').textContent = inventoryItems.length
     ? saturated.length
-      ? `${inventoryItems.length} inventory items tracked. Avoid adding more: ${saturated.map(([key, count]) => `${key} (${count})`).join(', ')}.`
+      ? `${inventoryItems.length} inventory items tracked. Avoid adding more in the same finish/group: ${saturated.map(([key, count]) => `${key} (${count})`).join(', ')}.`
       : `${inventoryItems.length} inventory items tracked; each finish favors groups with less exposure.`
     : activeVariants.length
       ? `Showing ${activeVariants.join(', ')} recommendations from the active filters.`
@@ -5978,22 +6938,24 @@ function renderPortfolioFocus() {
   box.innerHTML = sections.map(({variant, items}) => {
     const shellRecord = records.find(r => normalizedVariant(r) === variant) || {variant};
     const empty = `<div class="focus-empty small">No ${esc(variant)} candidate in the active filter set.</div>`;
-    const cards = items.map(({r, exposure}) => {
+    const cards = items.map(({r, exposure, mode}) => {
       const vcolor = colorForVerdict(r.verdict);
       const reason = exposure
-        ? `${exposure} held in ${esc(portfolioKey(r))}; size carefully.`
-        : `Clean diversification against your current inventory.`;
+        ? `${exposure} ${esc(normalizedVariant(r))} held in ${esc(portfolioKey(r))}; size carefully.`
+        : mode === 'watch'
+          ? `Best watch candidate; model is not calling this a buy yet.`
+          : `Clean diversification against your current inventory.`;
       return `<button class="focus-card ${rarityClass(r)}" ${rarityStyleAttr(r)} type="button" data-id="${esc(r.sticker_id || r.sticker)}">
         <img src="${esc(r.image_url || '')}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" />
         <span class="focus-card-body">
           <span class="focus-title"><b>${esc(r.sticker)}</b><span class="focus-rank">#${esc(r.priority_rank)}</span></span>
           <span class="focus-note">${reason}</span>
-          <span class="focus-meta"><span class="focus-chip" style="border-color:${vcolor}">${esc(r.verdict || '-')}</span><span class="focus-chip">${money(r.usd_price)}</span><span class="focus-chip">${pct(r.expected_return_pct,0)} exp.</span>${marketCounterHtml(r, 'mini')}</span>
+          <span class="focus-meta"><span class="focus-chip" style="border-color:${vcolor}">${mode === 'watch' ? 'Best wait' : esc(r.verdict || '-')}</span><span class="focus-chip">${money(r.usd_price)}</span><span class="focus-chip">${pct(r.expected_return_pct,0)} exp.</span>${marketCounterHtml(r, 'mini')}</span>
         </span>
       </button>`;
     }).join('');
     return `<section class="recommendation-group ${rarityClass(shellRecord)}" ${rarityStyleAttr(shellRecord)}>
-      <div class="recommendation-head"><span>${esc(variant)}</span><b>${items.length ? `${items.length} focus` : 'Waiting'}</b></div>
+      <div class="recommendation-head"><span>${esc(variant)}</span><b>${items.length ? `${items.length} ${items[0].mode === 'watch' ? 'watch' : 'focus'}` : 'Waiting'}</b></div>
       <div class="recommendation-cards">${items.length ? cards : empty}</div>
     </section>`;
   }).join('');
@@ -6078,6 +7040,7 @@ async function loadInventory() {
     setInventoryStatus('Local browser mode. Run inventory_server.py to save CSV.', 'warn');
   }
   renderInventory();
+  applyFiltersPreservingScroll();
 }
 
 async function persistInventory() {
@@ -6086,6 +7049,7 @@ async function persistInventory() {
   if (!inventoryApiOnline) {
     setInventoryStatus('Saved in browser only. Start inventory_server.py for CSV persistence.', 'warn');
     renderInventory();
+    applyFiltersPreservingScroll();
     return;
   }
   try {
@@ -6103,6 +7067,7 @@ async function persistInventory() {
     setInventoryStatus(`CSV save failed; kept browser copy. ${error.message}`, 'error');
   }
   renderInventory();
+  applyFiltersPreservingScroll();
 }
 
 function clearInventoryForm() {
@@ -6365,6 +7330,47 @@ function handleInventoryClick(event) {
     const r = item ? inventoryRecord(item) : null;
     if (r) openStickerModal(r.sticker_id, item.inventory_id);
   }
+}
+
+function selectorEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
+function openInventoryAtItem(inventoryId) {
+  const id = String(inventoryId || '');
+  if (!id) return;
+  const item = inventoryItems.find(row => row.inventory_id === id);
+  if (!item) {
+    setInventoryStatus('Inventory item was not found. Refresh inventory and try again.', 'error');
+    return;
+  }
+  openInventoryDrawer();
+  if ($('inventorySearch')) $('inventorySearch').value = '';
+  if ($('inventoryAccountFilter')) $('inventoryAccountFilter').value = '';
+  renderInventory();
+  requestAnimationFrame(() => {
+    const escaped = selectorEscape(id);
+    const candidates = [
+      ...document.querySelectorAll(`[data-inventory-card="${escaped}"], [data-inventory-row="${escaped}"]`)
+    ];
+    const target = candidates.find(el => el.offsetParent !== null) || candidates[0];
+    if (!target) return;
+    target.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
+    target.classList.add('inventory-jump-highlight');
+    if (typeof target.focus === 'function') target.focus({preventScroll:true});
+    window.setTimeout(() => target.classList.remove('inventory-jump-highlight'), 2100);
+  });
+}
+
+function setupOwnedInventoryLinks() {
+  document.addEventListener('click', event => {
+    const button = event.target && event.target.closest ? event.target.closest('[data-owned-inventory]') : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openInventoryAtItem(button.dataset.ownedInventory);
+  });
 }
 
 function inventoryCsvText() {
@@ -6704,12 +7710,14 @@ function setupPriceFetch() {
       setPriceFetchStatus('Could not find that sticker in the loaded dashboard data.', 'error');
       return;
     }
-    fetchCsgoskinsPricesFor([r], r.sticker || 'selected sticker');
+    setPriceFetchStatus(`Starting 2P refresh for ${r.sticker || 'selected sticker'}...`, 'busy');
+    fetchCsgoskinsPricesFor([r], r.sticker || 'selected sticker', button);
   });
 }
 
 function wire() {
   loadFavorites();
+  hydratePersistedCsgoskinsPrices();
   computeSignalSets();
   makeOptions();
   setupFilterPanel();
@@ -6789,7 +7797,7 @@ function wire() {
     ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','sortPreset','scoredFilter']
       .forEach(id => $(id).value = '');
     resetVariantFilter();
-    $('rowLimit').value = '0';
+    $('rowLimit').value = '120';
     viewMode = 'list';
     $('gridCols').value = 'auto';
     $('gridCustomCols').value = '';
@@ -6812,9 +7820,11 @@ function wire() {
   setupSparkTooltip();
   setupDetailModal();
   setupInventoryDrawer();
+  setupOwnedInventoryLinks();
   setupFavorites();
   setupPriceFetch();
   applyFilters();
+  hydrateServerCsgoskinsCache();
   mergeServerFavorites();
   loadInventory();
 }
@@ -6827,20 +7837,25 @@ wire();
         template
         .replace("__DATA_JSON__", data_json)
         .replace("__SERIES_JSON__", series_json)
+        .replace("__SECOND_MARKET_JSON__", second_market_json)
         .replace("__FAVORITES_JSON__", favorites_json)
         .replace("__VERDICT_COLORS__", json.dumps(VERDICT_COLORS))
         .replace("__VERDICT_ORDER__", json.dumps(VERDICT_ORDER))
     )
 
 
-def main() -> None:
+def main(fetch_2p: bool = True) -> None:
     analysis = load_analysis()
     history = load_history()
     series = build_history_series(analysis, history)
     records = [row_to_record(row) for _, row in analysis.iterrows()]
-    enrich_csgoskins_prices(records)
+    enrich_csgoskins_prices(records, fetch_stale=fetch_2p)
+    seeded = seed_second_market_history_from_records(records)
+    if seeded:
+        print(f"2P history cache seed points saved: {seeded}")
+    second_market_series = build_second_market_series(records)
     write_priority_csv(analysis)
-    html_text = build_html(records, series)
+    html_text = build_html(records, series, second_market_series)
     out_path = OUT_DIR / "sticker_dashboard.html"
     out_path.write_text(html_text, encoding="utf-8")
     print(f"Dashboard written to {out_path}")
@@ -6848,4 +7863,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-fetch-2p", action="store_true", help="Rebuild the dashboard from cached 2P prices without fetching CSGOSkins/UUSkins/CSFloat.")
+    args = parser.parse_args()
+    main(fetch_2p=not args.no_fetch_2p)
