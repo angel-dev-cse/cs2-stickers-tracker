@@ -4,11 +4,26 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PORT="${ANDROID_DASHBOARD_PORT:-8765}"
-RUN_SETUP=1
+RUN_SETUP=auto
 
 if [ "${1:-}" = "--skip-setup" ]; then
   RUN_SETUP=0
   shift
+elif [ "${1:-}" = "--setup" ]; then
+  RUN_SETUP=1
+  shift
+fi
+
+if [ "$RUN_SETUP" = "auto" ]; then
+  if python - <<'PY' >/dev/null 2>&1
+import numpy
+import pandas
+PY
+  then
+    RUN_SETUP=0
+  else
+    RUN_SETUP=1
+  fi
 fi
 
 if [ "$RUN_SETUP" -eq 1 ]; then

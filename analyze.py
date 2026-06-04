@@ -20,6 +20,7 @@ SECOND_MARKET_HISTORY_PATH = Path("visualized") / "second_market_history.csv"
 
 OUT_DIR = Path("analyze")
 DEFAULT_VARIANTS = "Paper,Foil,Holo,Gold"
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 
 
 # -----------------------------
@@ -60,6 +61,16 @@ def read_csv_loose(path: Path) -> pd.DataFrame:
                 row.pop(None, None)
                 rows.append(row)
         return pd.DataFrame(rows)
+
+
+def is_lfs_pointer(path: Path) -> bool:
+    try:
+        if path.stat().st_size > 1024:
+            return False
+        with open(path, "rb") as file:
+            return file.read(len(LFS_POINTER_PREFIX)).startswith(LFS_POINTER_PREFIX)
+    except OSError:
+        return False
 
 
 def normalize_variant(value: str | None) -> str:
@@ -146,10 +157,19 @@ def load_scores() -> pd.DataFrame:
     return pd.DataFrame(merged_rows, columns=score_cols)
 
 
-def load_history() -> pd.DataFrame:
-    files = candidate_files(["history_points*.csv", "latest_history*.csv"])
+def load_history(history_source: str = "full") -> pd.DataFrame:
+    if history_source == "latest":
+        files = sorted(candidate_files(["latest_history*.csv"]), key=lambda p: p.stat().st_mtime, reverse=True)[:1]
+        if not files:
+            history_dir = DATA_DIR / "history"
+            files = sorted(history_dir.glob("history_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)[:1] if history_dir.exists() else []
+    else:
+        files = candidate_files(["history_points*.csv", "latest_history*.csv"])
     frames: list[pd.DataFrame] = []
     for path in files:
+        if is_lfs_pointer(path):
+            print(f"Skipping Git LFS pointer file; run 'git lfs pull' for full history: {path}")
+            continue
         try:
             df = read_csv_loose(path)
         except Exception:
@@ -1773,6 +1793,12 @@ def compact_outputs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--variants", default=DEFAULT_VARIANTS)
+    parser.add_argument(
+        "--history-source",
+        choices=["full", "latest"],
+        default="full",
+        help="Use full cumulative history or only the latest history file. latest is safer for low-memory Android runs.",
+    )
     args = parser.parse_args()
     wanted_variants = parse_variants(args.variants)
     if not wanted_variants:
@@ -1782,7 +1808,7 @@ def main() -> None:
 
     snapshots = load_snapshots()
     scores = load_scores()
-    history = clean_history(load_history())
+    history = clean_history(load_history(args.history_source))
     history_summary = summarize_history(history)
     second_market_history = load_second_market_history()
     second_market_summary = summarize_second_market_history(second_market_history)

@@ -653,6 +653,11 @@ def main() -> None:
     parser.add_argument("--no-history", dest="history", action="store_false")
     parser.add_argument("--history-range", default="30D")
     parser.add_argument("--history-limit", type=int, default=0)
+    parser.add_argument(
+        "--no-cumulative-history",
+        action="store_true",
+        help="Write latest/per-run history but do not append data/history_points.csv. Recommended on low-memory Android devices.",
+    )
     args = parser.parse_args()
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -700,10 +705,13 @@ def main() -> None:
             history_fields = list(history_rows[0].keys())
             write_csv(history_file, history_rows, history_fields)
             write_csv(latest_history_file, history_rows, history_fields)
-            appended_count = append_deduped_csv(cumulative_file, history_rows, history_fields)
             print(f"Saved history: {history_file}")
             print(f"Saved latest history: {latest_history_file}")
-            print(f"Appended cumulative history: {cumulative_file} ({appended_count} new rows)")
+            if args.no_cumulative_history:
+                print(f"Skipped cumulative history append on request: {cumulative_file}")
+            else:
+                appended_count = append_deduped_csv(cumulative_file, history_rows, history_fields)
+                print(f"Appended cumulative history: {cumulative_file} ({appended_count} new rows)")
 
 
 if __name__ == "__main__":

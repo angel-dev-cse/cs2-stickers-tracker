@@ -1017,11 +1017,16 @@ def load_analysis() -> pd.DataFrame:
     return df
 
 
-def load_history() -> pd.DataFrame:
-    paths = [DATA_DIR / "history_points.csv", DATA_DIR / "latest_history.csv"]
+def load_history(history_source: str = "full") -> pd.DataFrame:
     history_dir = DATA_DIR / "history"
-    if history_dir.exists():
-        paths.extend(sorted(history_dir.glob("history_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)[:12])
+    if history_source == "latest":
+        paths = [DATA_DIR / "latest_history.csv"]
+        if not paths[0].exists() and history_dir.exists():
+            paths = sorted(history_dir.glob("history_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)[:1]
+    else:
+        paths = [DATA_DIR / "history_points.csv", DATA_DIR / "latest_history.csv"]
+        if history_dir.exists():
+            paths.extend(sorted(history_dir.glob("history_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)[:12])
     frames: list[pd.DataFrame] = []
     for path in paths:
         if path.exists():
@@ -4063,8 +4068,8 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
   }
   .portfolio-focus-grid {
     grid-template-columns:repeat(2, minmax(0,1fr));
-    gap:14px;
-    padding:16px;
+    gap:10px;
+    padding:12px;
   }
   .recommendation-group {
     min-width:0;
@@ -4080,7 +4085,7 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
     align-items:center;
     justify-content:space-between;
     gap:10px;
-    padding:11px 12px;
+    padding:8px 10px;
     border-bottom:1px solid rgba(229,236,247,.075);
   }
   .recommendation-head span {
@@ -4096,16 +4101,19 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
   }
   .recommendation-cards {
     display:grid;
-    grid-template-columns:1fr;
-    gap:8px;
-    padding:10px;
+    grid-template-columns:repeat(5, minmax(0,1fr));
+    gap:6px;
+    padding:8px;
   }
   .focus-card {
     width:100%;
-    min-height:86px;
-    grid-template-columns:66px minmax(0,1fr);
-    padding:9px;
-    border-radius:14px;
+    min-height:118px;
+    grid-template-columns:1fr;
+    grid-template-rows:auto 1fr;
+    justify-items:stretch;
+    gap:5px;
+    padding:6px;
+    border-radius:10px;
     background:
       linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.022)),
       linear-gradient(135deg, color-mix(in srgb, var(--rarity) 6%, transparent), transparent 68%);
@@ -4123,9 +4131,10 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
     outline:none;
   }
   .focus-card img {
-    width:66px;
-    height:66px;
-    border-radius:12px;
+    width:100%;
+    height:58px;
+    border-radius:8px;
+    object-fit:contain;
     background:rgba(255,255,255,.035);
   }
   .focus-card-body {
@@ -4133,16 +4142,93 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
     min-width:0;
   }
   .focus-note {
-    display:block;
-    color:#aeb7c6;
+    display:none;
   }
   .focus-meta {
+    display:flex;
+    flex-wrap:wrap;
+    gap:3px;
     align-items:center;
+    margin-top:4px;
   }
   .focus-chip {
+    min-width:0;
+    padding:2px 5px;
     border-radius:999px;
     background:rgba(255,255,255,.05);
     border-color:rgba(229,236,247,.11);
+    font-size:9px;
+    line-height:1.15;
+  }
+  .focus-title {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:4px;
+    align-items:start;
+  }
+  .focus-title b {
+    white-space:normal;
+    display:-webkit-box;
+    -webkit-line-clamp:2;
+    -webkit-box-orient:vertical;
+    line-height:1.12;
+    font-size:10.5px;
+  }
+  .focus-rank {
+    font-size:9px;
+  }
+  .focus-price-chips {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:3px;
+    margin-top:5px;
+  }
+  .focus-price-chip {
+    min-width:0;
+    padding:3px 5px;
+    border:1px solid rgba(229,236,247,.10);
+    border-radius:7px;
+    background:rgba(4,8,14,.32);
+    font-variant-numeric:tabular-nums;
+  }
+  .focus-price-chip.best {
+    border-color:rgba(94,230,168,.32);
+    background:rgba(94,230,168,.08);
+  }
+  .focus-price-chip span {
+    display:block;
+    overflow:hidden;
+    color:#9ba8b8;
+    font-size:8px;
+    font-weight:950;
+    text-overflow:ellipsis;
+    text-transform:uppercase;
+    white-space:nowrap;
+  }
+  .focus-price-chip b {
+    display:block;
+    overflow:hidden;
+    margin-top:1px;
+    color:#fff;
+    font-size:11px;
+    font-weight:950;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .recommendation-tools {
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:8px;
+    min-width:240px;
+  }
+  .recommendation-tools .hint {
+    text-align:right;
+  }
+  .recommendation-tools .refresh-prices-btn {
+    min-height:30px;
+    padding:5px 9px;
+    white-space:nowrap;
   }
   .focus-empty.small {
     padding:14px;
@@ -4723,8 +4809,11 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
     .grid-controls select { flex:1; min-width:112px; }
     .grid-controls input { flex:1; min-width:96px; }
     .portfolio-focus-grid { grid-template-columns:1fr; gap:8px; padding:10px; }
-    .focus-card { grid-template-columns:64px minmax(0,1fr); padding:9px; }
-    .focus-card img { width:64px; height:64px; }
+    .recommendation-cards { grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; }
+    .focus-card { min-height:112px; grid-template-columns:1fr; padding:6px; }
+    .focus-card img { width:100%; height:54px; }
+    .recommendation-tools { min-width:0; justify-content:flex-start; margin-top:8px; }
+    .recommendation-tools .hint { text-align:left; }
     .inventory-summary { display:block; }
     .inventory-summary-stats { justify-content:flex-start; margin-top:10px; }
     .inventory-stat { min-width:calc(50% - 4px); }
@@ -4951,7 +5040,10 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
           <div class="panel-title">Inventory-Aware Buy Focus by Finish</div>
           <div class="hint">Recommendations are split into Paper, Foil, Holo and Gold so you can judge each market separately while avoiding inventory concentration.</div>
         </div>
-        <div class="hint" id="portfolioFocusHint">Load inventory to personalize suggestions.</div>
+        <div class="recommendation-tools">
+          <div class="hint" id="portfolioFocusHint">Load inventory to personalize suggestions.</div>
+          <button id="refreshSuggestedPricesBtn" class="refresh-prices-btn" type="button">Refresh Suggested 2P</button>
+        </div>
         <span class="collapse-cue" aria-hidden="true"></span>
       </summary>
       <div id="portfolioFocus" class="portfolio-focus-grid"></div>
@@ -5205,6 +5297,7 @@ let selectedInventoryIds = new Set();
 let renderSequence = 0;
 let favoriteIds = new Set(Array.isArray(embeddedFavoriteIds) ? embeddedFavoriteIds.map(String) : []);
 let topTrueEdgeIds = new Set();
+let suggestedFocusRows = [];
 const RENDER_CHUNK_SIZE = 70;
 const USD_PER_TOKEN = 0.99 / 100;
 const TOKENS_PER_USD = 100 / 0.99;
@@ -5858,11 +5951,15 @@ function setPriceFetchStatus(message, tone='') {
   });
 }
 function setPriceFetchButtonsBusy(isBusy) {
-  const refresh = $('refreshFavoritePricesBtn');
-  if (refresh) {
-    refresh.disabled = isBusy;
-    refresh.textContent = isBusy ? 'Refreshing...' : 'Refresh Favorites';
-  }
+  const refreshButtons = [
+    [$('refreshFavoritePricesBtn'), 'Refresh Favorites'],
+    [$('refreshSuggestedPricesBtn'), 'Refresh Suggested 2P'],
+  ];
+  refreshButtons.forEach(([button, label]) => {
+    if (!button) return;
+    button.disabled = isBusy;
+    button.textContent = isBusy ? 'Refreshing...' : label;
+  });
   document.querySelectorAll('.fetch-price-btn').forEach(button => {
     button.classList.toggle('busy', isBusy);
     if (isBusy) button.setAttribute('aria-busy', 'true');
@@ -5944,7 +6041,7 @@ function refreshOpenStickerModal() {
 async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerButton=null) {
   if (priceFetchBusy) {
     setPriceFetchStatus('A 2P price refresh is already running.', 'warn');
-    return;
+    return {ok:false, skipped:true, items:[]};
   }
   const originalButtonText = triggerButton ? triggerButton.textContent : '';
   const unique = [];
@@ -5959,7 +6056,7 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
   const eligible = unique.filter(csgoskinsFetchable);
   if (!eligible.length) {
     setPriceFetchStatus('No Holo/Foil stickers selected for 2P refresh.', 'warn');
-    return;
+    return {ok:false, skipped:true, items:[]};
   }
 
   priceFetchBusy = true;
@@ -5987,6 +6084,7 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
     const payload = await response.json();
     const items = Array.isArray(payload.items) ? payload.items : [];
     const responded = new Set();
+    let missingReplies = 0;
     items.forEach(item => {
       const id = fetchStateKeyFromItem(item);
       if (id) responded.add(id);
@@ -5995,13 +6093,14 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
     eligible.forEach(r => {
       const id = favoriteId(r);
       if (id && !responded.has(id)) {
+        missingReplies += 1;
         priceFetchState.set(id, {tone:'warn', label:'No reply', message:`${r.sticker || 'Sticker'}: API did not return a refresh result.`});
       }
     });
     items.forEach(applyFetchedCsgoskinsPrice);
     const saved = persistFetchedCsgoskinsItems(items);
     computeSignalSets();
-    applyFiltersPreservingScroll();
+    applyFiltersPreservingScroll(() => renderInventory());
     refreshOpenStickerModal();
     const priced = items.filter(item => num(item.price) !== null).length;
     const csfloat = items.filter(item => num(item.csfloat_low_usd ?? item.markets?.CSFloat) !== null).length;
@@ -6009,7 +6108,7 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
     const fallback = items.filter(item => item.fallback_status || Object.values(item.market_sources || {}).includes('SkinSniper')).length;
     const live = items.filter(item => item.status === 'ok').length;
     const cached = items.filter(item => item.status === 'ok_cached_after_error').length;
-    const failed = items.filter(item => String(item.status || '').startsWith('error')).length;
+    const failed = items.filter(item => String(item.status || '').startsWith('error')).length + missingReplies;
     const errorKinds = [...new Set(items
       .map(item => String(item.status || ''))
       .filter(status => status.startsWith('error'))
@@ -6020,14 +6119,17 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
       fallback ? `${fallback} fallback` : '',
       `CF ${csfloat}`,
       `UU ${uuskins}`,
+      missingReplies ? `${missingReplies} no reply` : '',
       failed ? `${failed} failed${errorKinds ? `: ${errorKinds}` : ''}` : ''
     ].filter(Boolean).join(', ');
     setPriceFetchStatus(`2P refresh done: ${priced}/${items.length} priced${details ? ` (${details})` : ''}. Saved ${saved} reload cache row${saved === 1 ? '' : 's'}.`, failed ? 'warn' : 'ok');
+    return {ok:failed === 0, failed, priced, items};
   } catch (error) {
     setRowsPriceFetchState(eligible, 'error', 'Failed', `2P refresh failed: ${error.message || error}`);
-    applyFiltersPreservingScroll();
+    applyFiltersPreservingScroll(() => renderInventory());
     refreshOpenStickerModal();
     setPriceFetchStatus(`2P refresh failed: ${error.message || error}. Run python inventory_server.py and open the localhost dashboard URL.`, 'error');
+    return {ok:false, error, items:[]};
   } finally {
     priceFetchBusy = false;
     document.body.classList.remove('price-fetching');
@@ -6660,7 +6762,9 @@ function setupDetailModal() {
   document.querySelector('[data-close-modal]')?.addEventListener('click', closeStickerModal);
   document.addEventListener('click', event => {
     const card = event.target.closest('[data-id]');
-    if (!card || event.target.closest('a, button, input, label, select, textarea')) return;
+    const nestedButton = event.target.closest('button');
+    if (!card || event.target.closest('a, input, label, select, textarea')) return;
+    if (nestedButton && nestedButton !== card) return;
     const id = card.dataset.id;
     if (id) openStickerModal(id);
   });
@@ -6720,11 +6824,21 @@ function setupFavorites() {
 }
 
 function setupPriceFetch() {
-  $('refreshFavoritePricesBtn')?.addEventListener('click', event => {
+  $('refreshFavoritePricesBtn')?.addEventListener('click', async event => {
+    event.preventDefault();
     const favorites = records
       .filter(r => isFavorite(r) && csgoskinsFetchable(r))
       .sort((a, b) => normalizedVariant(a).localeCompare(normalizedVariant(b)) || Number(a.priority_rank || 9999) - Number(b.priority_rank || 9999));
-    fetchCsgoskinsPricesFor(favorites, 'favorite stickers', event.currentTarget);
+    await fetchCsgoskinsPricesFor(favorites, 'favorite stickers', event.currentTarget);
+    const suggested = suggested2pFetchRows(true);
+    if (suggested.length) {
+      await fetchCsgoskinsPricesFor(suggested, 'suggested stickers');
+    }
+  });
+  $('refreshSuggestedPricesBtn')?.addEventListener('click', async event => {
+    event.preventDefault();
+    event.stopPropagation();
+    await fetchCsgoskinsPricesFor(suggested2pFetchRows(false), 'suggested stickers', event.currentTarget);
   });
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-fetch-price]');
@@ -6800,15 +6914,23 @@ function scheduleFrame(callback) {
   window.setTimeout(run, document.hidden ? 16 : 80);
 }
 
-function applyFiltersPreservingScroll() {
+function applyFiltersPreservingScroll(afterRender=null) {
   const y = window.scrollY;
   const x = window.scrollX;
   const tableWrap = document.querySelector('.table-wrap');
   const tableLeft = tableWrap ? tableWrap.scrollLeft : 0;
+  const tableTop = tableWrap ? tableWrap.scrollTop : 0;
+  const drawer = document.querySelector('.inventory-drawer-dialog');
+  const drawerTop = drawer ? drawer.scrollTop : 0;
   applyFilters();
+  if (typeof afterRender === 'function') afterRender();
   const restore = () => {
     window.scrollTo(x, y);
-    if (tableWrap) tableWrap.scrollLeft = tableLeft;
+    if (tableWrap) {
+      tableWrap.scrollLeft = tableLeft;
+      tableWrap.scrollTop = tableTop;
+    }
+    if (drawer) drawer.scrollTop = drawerTop;
   };
   scheduleFrame(restore);
   setTimeout(restore, 80);
@@ -7108,7 +7230,6 @@ function inventoryFields() {
 
 function normalizeInventoryItem(item) {
   const r = recordById.get(String(item.sticker_id || '')) || records.find(row => String(row.sticker).toLowerCase() === String(item.sticker || '').toLowerCase());
-  const stamp = nowIso();
   const cost = normalizeCostFields(item.bought_tokens, item.bought_usd);
   return {
     inventory_id: String(item.inventory_id || makeInventoryId()),
@@ -7121,8 +7242,8 @@ function normalizeInventoryItem(item) {
     bought_usd: cost.bought_usd,
     acquired_at: String(item.acquired_at || ''),
     notes: String(item.notes || ''),
-    created_at: String(item.created_at || stamp),
-    updated_at: String(item.updated_at || stamp),
+    created_at: String(item.created_at || ''),
+    updated_at: String(item.updated_at || item.created_at || ''),
   };
 }
 
@@ -7169,9 +7290,22 @@ function inventoryFilteredItems() {
   return sortInventoryItems(filteredItems);
 }
 
+function parseTimeValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function inventoryDateValue(item) {
-  const value = Date.parse(item.acquired_at || item.updated_at || item.created_at || '');
-  return Number.isFinite(value) ? value : 0;
+  const acquired = parseTimeValue(item.acquired_at);
+  const futureBufferMs = 36 * 60 * 60 * 1000;
+  if (acquired && acquired <= Date.now() + futureBufferMs) return acquired;
+  return inventoryEntryTimeValue(item);
+}
+
+function inventoryEntryTimeValue(item) {
+  return parseTimeValue(item.created_at) || parseTimeValue(item.updated_at) || 0;
 }
 
 function inventorySortValue(item, key) {
@@ -7193,6 +7327,12 @@ function sortInventoryItems(items) {
   const mode = inventorySortMode || 'date_desc';
   const [key, dir] = mode.endsWith('_asc') ? [mode.replace(/_asc$/, ''), 'asc'] : [mode.replace(/_desc$/, ''), 'desc'];
   return [...items].sort((a, b) => {
+    if (key === 'date') {
+      let cmp = inventoryDateValue(a) - inventoryDateValue(b);
+      if (cmp === 0) cmp = inventoryEntryTimeValue(a) - inventoryEntryTimeValue(b);
+      if (cmp === 0) cmp = String(a.inventory_id || '').localeCompare(String(b.inventory_id || ''));
+      return dir === 'asc' ? cmp : -cmp;
+    }
     const av = inventorySortValue(a, key);
     const bv = inventorySortValue(b, key);
     let cmp = 0;
@@ -7411,6 +7551,47 @@ function signalTagsHtml(r, mode='row') {
   return `<div class="signal-tags ${mode}">${tags.map(tag => `<span class="signal-tag ${tag.cls}" title="${esc(tag.title)}">${esc(tag.label)}</span>`).join('')}</div>`;
 }
 
+function bestSecondMarketSource(r) {
+  const cf = marketplacePrice(r, 'CSFloat');
+  const uu = marketplacePrice(r, 'UUSkins');
+  const best = trustedThirdPartyLow(r);
+  if (best === null) return {label:'2P', price:null};
+  if (cf !== null && Math.abs(cf - best) < 0.005) return {label:'CSFloat', price:best};
+  if (uu !== null && Math.abs(uu - best) < 0.005) return {label:'UUSkins', price:best};
+  return {label:'2P', price:best};
+}
+
+function focusPriceChipsHtml(r) {
+  const steam = num(r.usd_price);
+  const best = bestSecondMarketSource(r);
+  const bestIsLower = best.price !== null && steam !== null && best.price < steam - 0.005;
+  const primaryLabel = bestIsLower ? best.label : 'Steam';
+  const primaryPrice = bestIsLower ? best.price : steam;
+  const secondaryLabel = bestIsLower ? 'Steam' : best.price !== null ? best.label : '2P';
+  const secondaryPrice = bestIsLower ? steam : best.price;
+  const edge = csgoskinsTrueEdgePct(r);
+  const edgeText = edge === null ? '-' : `${edge > 0 ? '+' : ''}${fmt(edge, 0)}%`;
+  return `<span class="focus-price-chips">
+    <span class="focus-price-chip ${bestIsLower ? 'best' : ''}" title="${bestIsLower ? 'Trusted 2P is lower than current Steam.' : 'Current Steam-side price.'}"><span>${esc(primaryLabel)}</span><b>${money(primaryPrice)}</b></span>
+    <span class="focus-price-chip" title="${bestIsLower ? 'Current Steam-side price.' : 'Trusted 2P price, if fetched.'}"><span>${esc(secondaryLabel)}</span><b>${money(secondaryPrice)}</b></span>
+    <span class="focus-price-chip" title="Model verdict"><span>Verdict</span><b>${esc(r.verdict || '-')}</b></span>
+    <span class="focus-price-chip" title="True edge versus collected Steam low"><span>2P Edge</span><b>${esc(edgeText)}</b></span>
+  </span>`;
+}
+
+function suggested2pFetchRows(excludeFavorites=false) {
+  const seen = new Set();
+  return suggestedFocusRows
+    .filter(r => r && csgoskinsFetchable(r))
+    .filter(r => {
+      const id = favoriteId(r);
+      if (!id || seen.has(id)) return false;
+      if (excludeFavorites && isFavorite(r)) return false;
+      seen.add(id);
+      return true;
+    });
+}
+
 function renderPortfolioFocus() {
   const box = $('portfolioFocus');
   if (!box) return;
@@ -7425,64 +7606,66 @@ function renderPortfolioFocus() {
   });
   const saturated = [...groupCounts.entries()].filter(([, count]) => count >= 2).sort((a, b) => b[1] - a[1]).slice(0, 4);
 
-  const activeVariants = selectedVariants();
-  const activeFilterIds = ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','scoredFilter'];
-  const anyFilterActive = activeFilterIds.some(id => String($(id)?.value || '').trim());
-  const variants = activeVariants.length ? activeVariants : ALL_VARIANTS;
-  const sourceRows = anyFilterActive ? filtered : records;
+  const variants = ALL_VARIANTS;
+  const sourceRows = records;
   const sortedCandidate = (variant) => {
     const base = sourceRows
       .filter(r => normalizedVariant(r) === variant)
       .map(r => ({r, exposure:groupCounts.get(portfolioExposureKey(r)) || 0, held:heldIds.get(String(r.sticker_id)) || 0}))
-      .filter(item => item.held === 0);
-    const buys = base
-      .filter(item => goodBuyCandidate(item.r))
-      .sort((a, b) => (a.exposure - b.exposure) || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999)))
-      .slice(0, 5)
-      .map(item => ({...item, mode:'buy'}));
-    if (buys.length) return buys;
+      .filter(item => item.held === 0)
+      .map(item => ({
+        ...item,
+        mode: goodBuyCandidate(item.r) ? 'buy' : watchCandidate(item.r) ? 'watch' : 'ranked',
+      }))
+      .filter(item => item.mode !== 'ranked' || Number(item.r.priority_score || 0) > 0);
+    const modeRank = {buy:0, watch:1, ranked:2};
     return base
-      .filter(item => watchCandidate(item.r))
-      .sort((a, b) => (Number(b.r.priority_score || 0) - Number(a.r.priority_score || 0)) || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999)))
-      .slice(0, 5)
-      .map(item => ({...item, mode:'watch'}));
+      .sort((a, b) =>
+        (modeRank[a.mode] - modeRank[b.mode])
+        || (a.exposure - b.exposure)
+        || (Number(a.r.priority_rank || 9999) - Number(b.r.priority_rank || 9999))
+        || (Number(b.r.priority_score || 0) - Number(a.r.priority_score || 0))
+      )
+      .slice(0, 5);
   };
 
   $('portfolioFocusHint').textContent = inventoryItems.length
     ? saturated.length
       ? `${inventoryItems.length} inventory items tracked. Avoid adding more in the same finish/group: ${saturated.map(([key, count]) => `${key} (${count})`).join(', ')}.`
       : `${inventoryItems.length} inventory items tracked; each finish favors groups with less exposure.`
-    : activeVariants.length
-      ? `Showing ${activeVariants.join(', ')} recommendations from the active filters.`
-      : 'Split by Paper, Foil, Holo and Gold from the active filters.';
+    : 'Fixed top-5 recommendations by finish from the latest analyzer output. Main table filters do not change this section.';
 
   const sections = variants.map(variant => ({variant, items:sortedCandidate(variant)}));
+  suggestedFocusRows = sections.flatMap(section => section.items.map(item => item.r));
   if (!sections.some(section => section.items.length)) {
+    suggestedFocusRows = [];
     box.innerHTML = '<div class="focus-empty">No underexposed buy candidates after the current filters. That usually means your inventory already overlaps the stronger candidates, the selected finish is too extended, or the model is asking you to wait.</div>';
     return;
   }
 
   box.innerHTML = sections.map(({variant, items}) => {
     const shellRecord = records.find(r => normalizedVariant(r) === variant) || {variant};
-    const empty = `<div class="focus-empty small">No ${esc(variant)} candidate in the active filter set.</div>`;
+    const empty = `<div class="focus-empty small">No ${esc(variant)} candidate in the latest analyzer output.</div>`;
     const cards = items.map(({r, exposure, mode}) => {
       const vcolor = colorForVerdict(r.verdict);
       const reason = exposure
         ? `${exposure} ${esc(normalizedVariant(r))} held in ${esc(portfolioKey(r))}; size carefully.`
         : mode === 'watch'
           ? `Best watch candidate; model is not calling this a buy yet.`
-          : `Clean diversification against your current inventory.`;
-      return `<button class="focus-card ${rarityClass(r)}" ${rarityStyleAttr(r)} type="button" data-id="${esc(r.sticker_id || r.sticker)}">
+          : mode === 'buy'
+            ? `Clean diversification against your current inventory.`
+            : `Highest-ranked remaining candidate for this finish.`;
+      return `<button class="focus-card ${rarityClass(r)}" ${rarityStyleAttr(r)} type="button" data-id="${esc(r.sticker_id || r.sticker)}" title="${esc(reason)}">
         <img src="${esc(r.image_url || '')}" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.visibility='hidden'" />
         <span class="focus-card-body">
           <span class="focus-title"><b>${esc(r.sticker)}</b><span class="focus-rank">#${esc(r.priority_rank)}</span></span>
-          <span class="focus-note">${reason}</span>
-          <span class="focus-meta"><span class="focus-chip" style="border-color:${vcolor}">${mode === 'watch' ? 'Best wait' : esc(r.verdict || '-')}</span><span class="focus-chip">${money(r.usd_price)}</span><span class="focus-chip">${pct(r.expected_return_pct,0)} exp.</span>${marketCounterHtml(r, 'mini')}</span>
+          <span class="focus-meta"><span class="focus-chip" style="border-color:${vcolor}">${mode === 'watch' ? 'Wait' : esc(r.verdict || '-')}</span><span class="focus-chip">${esc(r.priority_tier || '-')}</span></span>
+          ${focusPriceChipsHtml(r)}
         </span>
       </button>`;
     }).join('');
     return `<section class="recommendation-group ${rarityClass(shellRecord)}" ${rarityStyleAttr(shellRecord)}>
-      <div class="recommendation-head"><span>${esc(variant)}</span><b>${items.length ? `${items.length} ${items[0].mode === 'watch' ? 'watch' : 'focus'}` : 'Waiting'}</b></div>
+      <div class="recommendation-head"><span>${esc(variant)}</span><b>${items.length ? `Top ${items.length}` : 'Waiting'}</b></div>
       <div class="recommendation-cards">${items.length ? cards : empty}</div>
     </section>`;
   }).join('');
@@ -8249,9 +8432,9 @@ wire();
     )
 
 
-def main(fetch_2p: bool = True) -> None:
+def main(fetch_2p: bool = True, history_source: str = "full") -> None:
     analysis = load_analysis()
-    history = load_history()
+    history = load_history(history_source)
     series = build_history_series(analysis, history)
     records = [row_to_record(row) for _, row in analysis.iterrows()]
     enrich_csgoskins_prices(records, fetch_stale=fetch_2p)
@@ -8270,5 +8453,11 @@ def main(fetch_2p: bool = True) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-fetch-2p", action="store_true", help="Rebuild the dashboard from cached 2P prices without fetching CSGOSkins/UUSkins/CSFloat.")
+    parser.add_argument(
+        "--history-source",
+        choices=["full", "latest"],
+        default="full",
+        help="Use full cumulative history or only the latest history file. latest is safer for low-memory Android runs.",
+    )
     args = parser.parse_args()
-    main(fetch_2p=not args.no_fetch_2p)
+    main(fetch_2p=not args.no_fetch_2p, history_source=args.history_source)
