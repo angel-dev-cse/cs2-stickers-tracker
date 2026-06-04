@@ -29,8 +29,10 @@ CSGOSKINS_ERROR_RETRY_SECONDS = 4 * 60 * 60
 CSGOSKINS_WORKERS = 3
 CSGOSKINS_GENERATION_FETCH_LIMIT = 90
 UUSKINS_STICKER_CATEGORY_ID = 106
+MAX_CHART_POINTS_PER_STICKER = 120
 MIN_REASONABLE_2P_USD = 0.10
 GENERIC_2P_OUTLIER_RATIO = 0.45
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 SECOND_MARKET_HISTORY_FIELDS = [
     "timestamp",
     "fetched_at",
@@ -143,6 +145,16 @@ def safe_float(value, default=None):
         return default
     except Exception:
         return default
+
+
+def is_lfs_pointer(path: Path) -> bool:
+    try:
+        if path.stat().st_size > 1024:
+            return False
+        with open(path, "rb") as file:
+            return file.read(len(LFS_POINTER_PREFIX)).startswith(LFS_POINTER_PREFIX)
+    except OSError:
+        return False
 
 
 def trusted_2p_price_candidates(entry: dict[str, object]) -> list[float]:
@@ -1013,6 +1025,9 @@ def load_history() -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for path in paths:
         if path.exists():
+            if is_lfs_pointer(path):
+                print(f"Skipping Git LFS pointer file; run 'git lfs pull' for full history: {path}")
+                continue
             try:
                 frames.append(read_csv_loose(path))
             except Exception:
@@ -1020,6 +1035,9 @@ def load_history() -> pd.DataFrame:
     if not frames:
         files = candidate_files(["history_points*.csv", "latest_history*.csv", "history_*.csv"])
         for path in files:
+            if is_lfs_pointer(path):
+                print(f"Skipping Git LFS pointer file; run 'git lfs pull' for full history: {path}")
+                continue
             try:
                 frames.append(read_csv_loose(path))
             except Exception:
@@ -1052,6 +1070,21 @@ def load_history() -> pd.DataFrame:
     return hist
 
 
+def compact_chart_points(points: list[dict], max_points: int = MAX_CHART_POINTS_PER_STICKER) -> list[dict]:
+    if len(points) <= max_points:
+        return points
+    if max_points <= 2:
+        return [points[0], points[-1]]
+    selected: list[dict] = []
+    last_index = -1
+    for slot in range(max_points):
+        index = round(slot * (len(points) - 1) / (max_points - 1))
+        if index != last_index:
+            selected.append(points[index])
+            last_index = index
+    return selected
+
+
 def build_history_series(analysis: pd.DataFrame, hist: pd.DataFrame) -> dict[str, list[dict]]:
     if hist.empty or "sticker_id" not in hist.columns:
         return {}
@@ -1074,13 +1107,14 @@ def build_history_series(analysis: pd.DataFrame, hist: pd.DataFrame) -> dict[str
                 point_time = p.get("tooltip_time_raw", "")
             points.append({
                 "i": i,
-                "price": token,
-                "usd": usd,
-                "popularity": pop,
+                "price": round(token, 2),
+                "usd": None if usd is None else round(usd, 4),
+                "popularity": None if pop is None else round(pop),
                 "time": "" if pd.isna(point_time) else str(point_time),
             })
         if points:
             first = points[0]["price"]
+            points = compact_chart_points(points)
             if first > 0:
                 for point in points:
                     point["norm"] = round((point["price"] / first) * 100, 3)
@@ -1310,13 +1344,13 @@ def build_html_legacy(records: list[dict], series: dict[str, list[dict]]) -> str
   .hint { color:var(--muted); font-size:12px; }
   .table-wrap { max-height:78vh; overflow-y:auto; overflow-x:hidden; }
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
-  col.rank-col { width:64px; }
-  col.sticker-col { width:21%; }
-  col.price-col { width:8%; }
-  col.decision-col { width:13%; }
-  col.market-col { width:19%; }
+  col.rank-col { width:58px; }
+  col.sticker-col { width:18%; }
+  col.price-col { width:24%; }
+  col.decision-col { width:10%; }
+  col.market-col { width:20%; }
   col.scores-col { width:10%; }
-  col.notes-col { width:25%; }
+  col.notes-col { width:10%; }
   thead th {
     position:sticky; top:0; z-index:11; background:#151f2e; color:#d2dbe7;
     font-size:10px; text-transform:uppercase; letter-spacing:.07em; text-align:left;
@@ -2651,13 +2685,13 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
   .inventory-pnl.flat { color:#d8e1ee !important; }
   .inventory-empty { padding:18px; color:var(--muted); text-align:center; border:1px dashed rgba(169,180,196,.18); border-radius:8px; }
   table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
-  col.rank-col { width:64px; }
-  col.sticker-col { width:26%; }
-  col.price-col { width:14%; }
-  col.decision-col { width:14%; }
-  col.edge-col { width:15%; }
-  col.market-col { width:15%; }
-  col.notes-col { width:12%; }
+  col.rank-col { width:58px; }
+  col.sticker-col { width:18%; }
+  col.price-col { width:24%; }
+  col.decision-col { width:10%; }
+  col.edge-col { width:10%; }
+  col.market-col { width:20%; }
+  col.notes-col { width:10%; }
   thead th {
     position:sticky;
     top:0;
@@ -3014,7 +3048,7 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
   .spark-tip {
     position:fixed;
     display:none;
-    z-index:1000;
+    z-index:3000;
     max-width:260px;
     padding:9px 10px;
     border:1px solid #334155;
@@ -3606,9 +3640,9 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
   }
   .price-compare {
     display:grid;
-    grid-template-columns:repeat(2, minmax(0,1fr));
-    gap:7px;
-    margin-top:11px;
+    grid-template-columns:1fr;
+    gap:8px;
+    margin-top:0;
   }
   .market-price-card {
     display:block;
@@ -3695,6 +3729,182 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
   .store-chip.csfloat .store-icon { background:linear-gradient(135deg,#44e2ff,#3b82f6); }
   .store-chip.uuskins .store-icon { background:linear-gradient(135deg,#f8d24a,#ff8a00); }
   .store-chip b { margin-left:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .market-comparison-card {
+    display:block;
+    min-width:0;
+    padding:8px;
+    border:1px solid rgba(229,236,247,.12);
+    border-radius:12px;
+    color:#edf4ff;
+    text-decoration:none;
+    font-variant-numeric:tabular-nums;
+    background:#182131;
+    transition:border-color .16s ease, background-color .16s ease, transform .16s ease;
+  }
+  .market-comparison-card:hover {
+    transform:translateY(-1px);
+    border-color:rgba(229,236,247,.24);
+    background:#1d2a3c;
+  }
+  .market-comparison-card.steam {
+    border-color:rgba(94,230,168,.24);
+    background:linear-gradient(180deg, rgba(94,230,168,.075), rgba(255,255,255,.026)), #182131;
+  }
+  .market-comparison-card.cf {
+    border-color:rgba(80,174,255,.26);
+    background:linear-gradient(180deg, rgba(80,174,255,.085), rgba(255,255,255,.026)), #182131;
+  }
+  .market-comparison-card.uu {
+    border-color:rgba(255,214,76,.27);
+    background:linear-gradient(180deg, rgba(255,214,76,.09), rgba(255,255,255,.024)), #182131;
+  }
+  .market-comparison-card.unavailable {
+    opacity:.72;
+  }
+  .market-comparison-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    margin-bottom:7px;
+  }
+  .market-comparison-source {
+    display:inline-flex;
+    align-items:center;
+    min-width:0;
+    gap:6px;
+    color:#f5f8ff;
+    font-size:11px;
+    font-weight:950;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .market-comparison-card.steam .store-icon { background:linear-gradient(135deg,#5ee6a8,#60a5fa); }
+  .market-comparison-card.cf .store-icon { background:linear-gradient(135deg,#44e2ff,#3b82f6); }
+  .market-comparison-card.uu .store-icon { background:linear-gradient(135deg,#f8d24a,#ff8a00); }
+  .market-comparison-head b {
+    color:#fff;
+    font-size:14px;
+    line-height:1;
+    font-weight:950;
+    white-space:nowrap;
+  }
+  .market-comparison-cells {
+    display:grid;
+    grid-template-columns:repeat(4, minmax(0,1fr));
+    gap:5px;
+  }
+  .market-comparison-cell {
+    min-width:0;
+    padding:5px 6px;
+    border:1px solid rgba(229,236,247,.08);
+    border-radius:8px;
+    background:rgba(5,9,15,.24);
+  }
+  .market-comparison-cell span {
+    display:block;
+    color:#98a5b8;
+    font-size:9px;
+    font-weight:950;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .market-comparison-cell b {
+    display:flex;
+    align-items:center;
+    gap:4px;
+    min-width:0;
+    margin-top:2px;
+    color:#f8fbff;
+    font-size:12px;
+    line-height:1.08;
+    font-weight:950;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .market-comparison-cell small {
+    display:block;
+    margin-top:2px;
+    color:#9da9ba;
+    font-size:9.5px;
+    line-height:1.15;
+    font-weight:800;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .market-comparison-cell.prev b { color:#d7e0ee; }
+  .market-comparison-cell.low b { color:#78f3a6; }
+  .market-comparison-cell.high b { color:#f5d98f; }
+  .true-edge-summary {
+    display:grid;
+    gap:7px;
+    padding:9px;
+    border:1px solid rgba(94,230,168,.24);
+    border-radius:12px;
+    background:linear-gradient(180deg, rgba(94,230,168,.075), rgba(255,255,255,.022)), #182131;
+    font-variant-numeric:tabular-nums;
+  }
+  .true-edge-summary.expensive {
+    border-color:rgba(251,113,133,.28);
+    background:linear-gradient(180deg, rgba(251,113,133,.075), rgba(255,255,255,.022)), #201c27;
+  }
+  .true-edge-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+  }
+  .true-edge-head span {
+    color:#aeb7c6;
+    font-size:10px;
+    font-weight:950;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .true-edge-head b {
+    color:#f8fbff;
+    font-size:15px;
+    line-height:1;
+    font-weight:950;
+  }
+  .true-edge-breakdown {
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0,1fr));
+    gap:5px;
+  }
+  .true-edge-chip {
+    min-width:0;
+    padding:5px 6px;
+    border:1px solid rgba(229,236,247,.09);
+    border-radius:8px;
+    background:rgba(5,9,15,.22);
+  }
+  .true-edge-chip span {
+    display:block;
+    color:#98a5b8;
+    font-size:9px;
+    font-weight:950;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+  }
+  .true-edge-chip b {
+    display:block;
+    margin-top:2px;
+    font-size:12px;
+    font-weight:950;
+  }
+  .true-edge-chip small {
+    display:block;
+    margin-top:2px;
+    color:#9da9ba;
+    font-size:9.5px;
+    font-weight:800;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
   .second-market-price-grid {
     grid-column:1 / -1;
     display:grid;
@@ -4667,6 +4877,10 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
     .modal-title { font-size:20px; }
     .modal-price b { font-size:28px; }
     .modal-sections { grid-template-columns:1fr; gap:9px; }
+    .market-comparison-cells,
+    .true-edge-breakdown {
+      grid-template-columns:repeat(2, minmax(0,1fr));
+    }
     .footer-note { padding:11px 12px; font-size:11px; }
   }
 </style>
@@ -4720,7 +4934,7 @@ def build_html(records: list[dict], series: dict[str, list[dict]], second_market
       <div class="field"><label for="confidenceFilter">Confidence</label><select id="confidenceFilter"><option value="">Any</option><option value="0.35">35%+</option><option value="0.50">50%+</option><option value="0.70">70%+</option></select></div>
       <div class="field"><label for="priceMax">Max tokens</label><input id="priceMax" type="number" min="0" step="1" placeholder="Any" /></div>
       <div class="field"><label for="priceStateFilter">Price state</label><select id="priceStateFilter"><option value="">All</option><option value="current_low">Current low</option><option value="above_low">Above low</option></select></div>
-      <div class="field"><label for="favoriteFilter">Bookmarks</label><select id="favoriteFilter"><option value="">All</option><option value="favorites">Favorites only</option><option value="not_favorites">Not favorites</option></select></div>
+      <div class="field"><label for="favoriteFilter">Bookmarks</label><select id="favoriteFilter"><option value="favorites">Favorites only</option><option value="">All</option><option value="not_favorites">Not favorites</option></select></div>
       <div class="field"><label for="refreshFavoritePricesBtn">2P prices</label><button id="refreshFavoritePricesBtn" class="refresh-prices-btn" type="button">Refresh Favorites</button><div id="priceFetchInlineStatus" class="price-fetch-status price-fetch-inline-status">2P refresh idle.</div></div>
       <div class="field"><label for="lowGapMax">Within low %</label><input id="lowGapMax" type="number" min="0" step="0.5" placeholder="5 or 10" /></div>
       <div class="field"><label for="sortPreset">Sort</label><select id="sortPreset"><option value="">Priority rank</option><option value="third_party_edge">2nd-party true edge</option><option value="third_party_low">2P lowest price</option><option value="demand_desc">Demand high first</option><option value="quality_desc">Quality high first</option><option value="flood_low">Flood low first</option><option value="flood_high">Flood high first</option><option value="expected_desc">Expected high first</option><option value="confidence_desc">Confidence high first</option><option value="value_edge_desc">Value edge high first</option><option value="current_low">Current low first</option><option value="low_gap">Closest to low</option><option value="price_asc">Price low to high</option><option value="price_desc">Price high to low</option></select></div>
@@ -5080,17 +5294,24 @@ function priceFetchButtonHtml(r, compact=false) {
     : 'Live CSGOSkins refresh is limited to Holo/Foil to avoid slow or excessive requests.';
   return `<button class="fetch-price-btn ${compact ? 'compact' : ''}" type="button" data-fetch-price="${esc(id)}"${stateAttr} ${fetchable ? '' : 'disabled'} title="${esc(title)}">${esc(label)}</button>`;
 }
-function tokenUsdPair(tokenValue, r) {
+function tokenUsdValue(tokenValue, r) {
   const historicalTokens = num(tokenValue);
-  if (historicalTokens === null) return {tokens:'-', usd:'-'};
+  if (historicalTokens === null) return {tokens:null, usd:null};
   const currentTokens = num(r.price_tokens);
   const currentUsd = num(r.usd_price);
   if (currentTokens === null || currentTokens <= 0 || currentUsd === null) {
-    return {tokens:tokens(historicalTokens), usd:'-'};
+    return {tokens:historicalTokens, usd:null};
   }
   return {
-    tokens:tokens(historicalTokens),
-    usd:money((historicalTokens / currentTokens) * currentUsd)
+    tokens:historicalTokens,
+    usd:(historicalTokens / currentTokens) * currentUsd
+  };
+}
+function tokenUsdPair(tokenValue, r) {
+  const point = tokenUsdValue(tokenValue, r);
+  return {
+    tokens:tokens(point.tokens),
+    usd:money(point.usd)
   };
 }
 function isReleaseLow(r) {
@@ -5230,11 +5451,21 @@ function marketplaceSearchName(r) {
   return String(r?.market_hash_name || r?.sticker || '').trim();
 }
 
+function uuskinsItemUrl(r) {
+  const name = marketplaceSearchName(r);
+  const slug = name
+    .replace(/\s*\|\s*/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `https://www.uuskins.com/items/${encodeURI(slug)}`;
+}
+
 function marketplaceUrl(r, key) {
   const name = marketplaceSearchName(r);
   const encoded = encodeURIComponent(name);
   if (key === 'CSFloat' || key === 'csfloat') return `https://csfloat.com/search?sort_by=lowest_price&type=buy_now&market_hash_name=${encoded}`;
-  if (key === 'UUSkins' || key === 'uuskins') return `https://www.uuskins.com/items?search_word=${encoded}`;
+  if (key === 'UUSkins' || key === 'uuskins') return uuskinsItemUrl(r);
   return r?.csgoskins_url || '#';
 }
 
@@ -5264,24 +5495,30 @@ function secondMarketStats(r, key) {
       current,
       previous:null,
       low:current,
+      high:current,
       count:current === null ? 0 : 1,
       lastTime:'',
-      lowTime:''
+      lowTime:'',
+      highTime:''
     };
   }
   const currentPoint = points[points.length - 1];
   const previousPoint = points.length > 1 ? points[points.length - 2] : null;
   let lowPoint = points[0];
+  let highPoint = points[0];
   points.forEach(point => {
     if (point.price !== null && (lowPoint.price === null || point.price < lowPoint.price)) lowPoint = point;
+    if (point.price !== null && (highPoint.price === null || point.price > highPoint.price)) highPoint = point;
   });
   return {
     current:currentPoint.price,
     previous:previousPoint ? previousPoint.price : null,
     low:lowPoint ? lowPoint.price : null,
+    high:highPoint ? highPoint.price : null,
     count:points.length,
     lastTime:currentPoint.time || '',
-    lowTime:lowPoint ? (lowPoint.time || '') : ''
+    lowTime:lowPoint ? (lowPoint.time || '') : '',
+    highTime:highPoint ? (highPoint.time || '') : ''
   };
 }
 
@@ -5361,15 +5598,135 @@ function csgoskinsPriceHtml(r) {
   const cardClass = isCsgoskinsOpportunity(r) ? ' deal' : discount !== null && discount < -5 ? ' expensive' : '';
   return `<a class="market-price-card skins${cardClass}" href="${esc(url)}" target="_blank" rel="noopener" title="Open CSGOSkins comparison. Positive discount means the trusted 2P low is cheaper than the dashboard Steam price."><span>2P Low</span><b>${money(csgPrice)}</b><small>${tokens(tokenEquivalent)} token eq. <em class="${diffClass}">${diffText}</em></small></a>`;
 }
-function priceCompareHtml(r) {
+
+function usdDeltaHtml(currentUsd, previousUsd) {
+  const current = num(currentUsd);
+  const previous = num(previousUsd);
+  if (current === null || previous === null || previous <= 0) return '';
+  const change = ((current - previous) / previous) * 100;
+  const cls = change > 0.5 ? 'up' : change < -0.5 ? 'down' : '';
+  const sign = change > 0 ? '+' : '';
+  return `<span class="price-delta ${cls}">${sign}${fmt(change, 1)}%</span>`;
+}
+
+function tokenPoint(tokenValue, r) {
+  const point = tokenUsdValue(tokenValue, r);
+  return {usd:point.usd, tokens:point.tokens, tokenEq:false};
+}
+
+function usdPoint(usdValue) {
+  const usd = num(usdValue);
+  return {usd, tokens:usd === null ? null : usdToTokens(usd), tokenEq:true};
+}
+
+function pointTokenText(point) {
+  if (!point || num(point.tokens) === null) return '-';
+  return `${tokens(point.tokens)} ${point.tokenEq ? 'token eq.' : 'tokens'}`;
+}
+
+function marketComparisonCellHtml(label, point, cls='', deltaHtml='') {
+  const value = point ? num(point.usd) : null;
+  const delta = value === null ? '' : deltaHtml;
+  return `<span class="market-comparison-cell ${cls}"><span>${esc(label)}</span><b>${money(value)}${delta}</b><small>${esc(pointTokenText(point))}</small></span>`;
+}
+
+function steamMarketStats(r, points=[]) {
+  const previousToken = previousPriceToken(r, points);
+  return {
+    current:{usd:num(r.usd_price), tokens:num(r.price_tokens), tokenEq:false},
+    previous:tokenPoint(previousToken, r),
+    low:tokenPoint(r.hist_min, r),
+    high:tokenPoint(r.hist_max, r),
+    count:Math.max(num(r.hist_points) || 0, points.length || 0)
+  };
+}
+
+function secondMarketSourceStats(r, key) {
+  const stats = secondMarketStats(r, key);
+  return {
+    current:usdPoint(stats.current),
+    previous:usdPoint(stats.previous),
+    low:usdPoint(stats.low),
+    high:usdPoint(stats.high),
+    count:stats.count,
+    lastTime:stats.lastTime,
+    lowTime:stats.lowTime,
+    highTime:stats.highTime
+  };
+}
+
+function marketComparisonCardHtml({r, key, label, icon, cls, url, stats, title}) {
+  const anyPrice = [stats.current, stats.previous, stats.low, stats.high].some(point => point && num(point.usd) !== null);
+  const delta = key === 'steam'
+    ? previousDeltaHtml(stats.previous?.tokens, r)
+    : usdDeltaHtml(stats.current?.usd, stats.previous?.usd);
+  const fullTitle = [
+    title,
+    stats.count ? `${stats.count} saved/history point${stats.count === 1 ? '' : 's'}` : '',
+    stats.lastTime ? `Last: ${String(stats.lastTime).replace('T', ' ').replace('.000Z', 'Z')}` : ''
+  ].filter(Boolean).join('\n');
+  return `<a class="market-comparison-card ${cls} ${anyPrice ? '' : 'unavailable'}" href="${esc(url || '#')}" target="_blank" rel="noopener" title="${esc(fullTitle)}">
+    <div class="market-comparison-head">
+      <span class="market-comparison-source"><span class="store-icon">${esc(icon)}</span>${esc(label)}</span>
+      <b>${anyPrice ? money(stats.current?.usd) : 'Check'}</b>
+    </div>
+    <div class="market-comparison-cells">
+      ${marketComparisonCellHtml('Now', stats.current, 'now', delta)}
+      ${marketComparisonCellHtml('Prev', stats.previous, 'prev')}
+      ${marketComparisonCellHtml('Low', stats.low, 'low')}
+      ${marketComparisonCellHtml('High', stats.high, 'high')}
+    </div>
+  </a>`;
+}
+
+function edgeForPrice(r, sourcePrice) {
+  const lowUsd = steamLowUsd(r);
+  const price = num(sourcePrice);
+  if (lowUsd === null || lowUsd <= 0 || price === null || price <= 0) return null;
+  const abs = lowUsd - price;
+  return {pct:(abs / lowUsd) * 100, abs, lowUsd, price};
+}
+
+function trueEdgeChipHtml(label, price, r) {
+  const edge = edgeForPrice(r, price);
+  if (!edge) {
+    return `<span class="true-edge-chip"><span>${esc(label)}</span><b>-</b><small>needs price</small></span>`;
+  }
+  const cls = Math.abs(edge.pct) < 0.5 ? 'flat' : edge.pct > 0 ? 'pos' : 'neg';
+  const sign = edge.pct > 0 ? '+' : '';
+  return `<span class="true-edge-chip" title="${esc(label)} compared with collected Steam low ${money(edge.lowUsd)}. Positive means the source is below Steam low."><span>${esc(label)}</span><b class="${cls}">${sign}${fmt(edge.pct, 1)}%</b><small>${money(edge.abs)} vs low</small></span>`;
+}
+
+function trueEdgeSummaryHtml(r) {
+  const best = trustedThirdPartyLow(r);
+  const bestEdge = edgeForPrice(r, best);
+  const cf = marketplacePrice(r, 'CSFloat');
+  const uu = marketplacePrice(r, 'UUSkins');
+  const cls = bestEdge && bestEdge.pct < -5 ? ' expensive' : '';
+  const headlineClass = bestEdge === null || Math.abs(bestEdge.pct) < 0.5 ? 'flat' : bestEdge.pct > 0 ? 'pos' : 'neg';
+  const headline = bestEdge ? `${bestEdge.pct > 0 ? '+' : ''}${fmt(bestEdge.pct, 1)}%` : '-';
+  const sub = bestEdge ? `${money(bestEdge.abs)} vs Steam low ${money(bestEdge.lowUsd)}` : 'needs trusted 2P price and Steam low';
+  return `<div class="true-edge-summary${cls}" title="True edge compares second-market prices against the collected Steam historical low.">
+    <div class="true-edge-head"><span>True Edge vs Steam Low</span><b class="${headlineClass}">${headline}</b></div>
+    <div class="true-edge-breakdown">
+      ${trueEdgeChipHtml('Best 2P', best, r)}
+      ${trueEdgeChipHtml('CSFloat', cf, r)}
+      ${trueEdgeChipHtml('UUSkins', uu, r)}
+    </div>
+    <div class="hint">${esc(sub)}</div>
+  </div>`;
+}
+
+function priceCompareHtml(r, points=[]) {
   const steamUrl = r.steam_market_url || '#';
+  const steamStats = steamMarketStats(r, points);
+  const cfStats = secondMarketSourceStats(r, 'csfloat');
+  const uuStats = secondMarketSourceStats(r, 'uuskins');
   return `<div class="price-compare">
-    <a class="market-price-card steam" href="${esc(steamUrl)}" target="_blank" rel="noopener" title="Open this sticker on Steam Community Market. Price shown is from collected CS2Tokens data."><span>Steam</span><b>${money(r.usd_price)}</b><small>${tokens(r.price_tokens)} tokens</small></a>
-    <div class="market-price-card steam-low" title="Collected historical low converted to USD using the current token-to-USD ratio."><span>Steam Low</span><b>${money(steamLowUsd(r))}</b><small>${tokens(r.hist_min)} low tokens</small></div>
-    ${csgoskinsPriceHtml(r)}
-    ${csgoskinsTrueEdgeCardHtml(r)}
-    ${marketplaceOffersHtml(r)}
-    ${secondMarketPriceGridHtml(r)}
+    ${marketComparisonCardHtml({r, key:'steam', label:'Steam', icon:'ST', cls:'steam', url:steamUrl, stats:steamStats, title:'Open Steam Community Market. Steam values are from collected CS2Tokens/Steam-side history.'})}
+    ${marketComparisonCardHtml({r, key:'csfloat', label:'CSFloat', icon:'CF', cls:'cf', url:marketplaceUrl(r, 'csfloat'), stats:cfStats, title:'Open CSFloat search. Values are saved from CSGOSkins/SkinSniper/API refresh history.'})}
+    ${marketComparisonCardHtml({r, key:'uuskins', label:'UUSkins', icon:'UU', cls:'uu', url:marketplaceUrl(r, 'uuskins'), stats:uuStats, title:'Open UUSkins search. Values are saved from CSGOSkins/SkinSniper/API refresh history.'})}
+    ${trueEdgeSummaryHtml(r)}
   </div>`;
 }
 function gridPriceStackHtml(r) {
@@ -5512,6 +5869,40 @@ function setPriceFetchButtonsBusy(isBusy) {
     else button.removeAttribute('aria-busy');
   });
 }
+
+function fetchStateKeyFromItem(item) {
+  const key = item?.id || item?.sticker_id || item?.market_hash_name || item?.sticker || item?.csgoskins_url || '';
+  const r = recordForFetchId(key);
+  return r ? favoriteId(r) : String(key || '');
+}
+
+function setRowsPriceFetchState(rows, tone, label, message) {
+  rows.forEach(r => {
+    const id = favoriteId(r);
+    if (!id) return;
+    priceFetchState.set(id, {tone, label, message});
+  });
+}
+
+function setItemPriceFetchState(item) {
+  const id = fetchStateKeyFromItem(item);
+  if (!id) return;
+  const status = String(item?.status || '');
+  const markets = item?.markets && typeof item.markets === 'object' ? item.markets : {};
+  const hasPrice = num(item?.price) !== null
+    || num(item?.csfloat_low_usd ?? markets.CSFloat) !== null
+    || num(item?.uuskins_low_usd ?? markets.UUSkins) !== null;
+  const name = item?.sticker || item?.market_hash_name || 'Sticker';
+  if (status.startsWith('error')) {
+    priceFetchState.set(id, {tone:'error', label:'Failed', message:`${name}: ${status}`});
+  } else if (status === 'ok_cached_after_error') {
+    priceFetchState.set(id, {tone:'warn', label:'Stale', message:`${name}: live refresh failed; showing last cached 2P price.`});
+  } else if (hasPrice) {
+    priceFetchState.set(id, {tone:'ok', label:'Updated', message:`${name}: 2P price refreshed.`});
+  } else {
+    priceFetchState.set(id, {tone:'warn', label:'No price', message:`${name}: refresh completed but no trusted CSFloat/UUSkins price was found.`});
+  }
+}
 function applyFetchedCsgoskinsPrice(item) {
   const r = recordForFetchId(item?.id || item?.sticker_id || item?.market_hash_name || item?.sticker);
   if (!r) return false;
@@ -5577,8 +5968,12 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
   if (triggerButton) {
     triggerButton.disabled = true;
     triggerButton.textContent = 'Fetching...';
+    triggerButton.dataset.state = 'busy';
   }
+  setRowsPriceFetchState(eligible, 'busy', 'Fetching', `Refreshing ${eligible.length} ${label}...`);
   setPriceFetchStatus(`Refreshing ${eligible.length} ${label}...`, 'busy');
+  applyFiltersPreservingScroll();
+  refreshOpenStickerModal();
   try {
     const response = await fetch('/api/csgoskins-price', {
       method:'POST',
@@ -5591,6 +5986,18 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
     }
     const payload = await response.json();
     const items = Array.isArray(payload.items) ? payload.items : [];
+    const responded = new Set();
+    items.forEach(item => {
+      const id = fetchStateKeyFromItem(item);
+      if (id) responded.add(id);
+      setItemPriceFetchState(item);
+    });
+    eligible.forEach(r => {
+      const id = favoriteId(r);
+      if (id && !responded.has(id)) {
+        priceFetchState.set(id, {tone:'warn', label:'No reply', message:`${r.sticker || 'Sticker'}: API did not return a refresh result.`});
+      }
+    });
     items.forEach(applyFetchedCsgoskinsPrice);
     const saved = persistFetchedCsgoskinsItems(items);
     computeSignalSets();
@@ -5617,6 +6024,9 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
     ].filter(Boolean).join(', ');
     setPriceFetchStatus(`2P refresh done: ${priced}/${items.length} priced${details ? ` (${details})` : ''}. Saved ${saved} reload cache row${saved === 1 ? '' : 's'}.`, failed ? 'warn' : 'ok');
   } catch (error) {
+    setRowsPriceFetchState(eligible, 'error', 'Failed', `2P refresh failed: ${error.message || error}`);
+    applyFiltersPreservingScroll();
+    refreshOpenStickerModal();
     setPriceFetchStatus(`2P refresh failed: ${error.message || error}. Run python inventory_server.py and open the localhost dashboard URL.`, 'error');
   } finally {
     priceFetchBusy = false;
@@ -5625,6 +6035,7 @@ async function fetchCsgoskinsPricesFor(rows, label='selected stickers', triggerB
     if (triggerButton) {
       triggerButton.disabled = false;
       triggerButton.textContent = originalButtonText || 'Fetch 2P';
+      delete triggerButton.dataset.state;
     }
   }
 }
@@ -6001,14 +6412,11 @@ function rowHtml(r) {
       </div>
     </td>
     <td data-label="Price">
-      <div class="price-main">${money(r.usd_price)}</div>
-      <div class="price-sub">${tokens(r.price_tokens)} tokens</div>
-      ${priceCompareHtml(r)}
+      ${priceCompareHtml(r, points)}
       ${ownedInventoryPriceHtml(r)}
       ${secondMarketSignalHtml(r)}
       ${csgoskinsOpportunityTagHtml(r)}
       ${lowGapHtml(r)}
-      ${priceRangeHtml(r, points)}
       <div class="metric-list">
         <div class="metric-row">${metricLabel('Entry')}<b>${esc(r.entry_tier || '-')}</b></div>
       </div>
@@ -6154,11 +6562,10 @@ function stickerDetailsHtml(r, inventoryItem=null) {
       <div class="modal-meta">${esc(r.player_name || r.team_name || r.team || 'No team')} | ${esc(typeLabel)} | ${esc(r.variant || '-')}</div>
       <div class="modal-price"><b>${money(r.usd_price)}</b><span>${tokens(r.price_tokens)} tokens</span></div>
       ${inventoryContextHtml(inventoryItem, r)}
-      ${priceCompareHtml(r)}
+      ${priceCompareHtml(r, points)}
       ${csgoskinsOpportunityTagHtml(r)}
       <div class="modal-market-count">${marketCounterHtml(r, 'full')}</div>
       ${lowGapHtml(r)}
-      ${priceRangeHtml(r, points)}
       <div class="modal-sections">
         <div class="modal-section">
           <h3>Decision</h3>
@@ -6207,6 +6614,126 @@ function stickerDetailsHtml(r, inventoryItem=null) {
       </div>
     </div>
   </div>`;
+}
+
+function openStickerModal(stickerId, inventoryId=null) {
+  const r = recordForFetchId(stickerId);
+  const modal = $('detailModal');
+  const content = $('modalContent');
+  if (!r || !modal || !content) return;
+  activeStickerModalId = favoriteId(r);
+  activeInventoryModalId = inventoryId ? String(inventoryId) : null;
+  const item = activeInventoryModalId ? inventoryItems.find(row => row.inventory_id === activeInventoryModalId) : null;
+  content.innerHTML = stickerDetailsHtml(r, item || null);
+  modal.hidden = false;
+  document.documentElement.style.overflow = 'hidden';
+  $('modalClose')?.focus({preventScroll:true});
+}
+
+function closeStickerModal() {
+  const modal = $('detailModal');
+  if (!modal) return;
+  modal.hidden = true;
+  activeStickerModalId = null;
+  activeInventoryModalId = null;
+  if ($('inventoryDrawer')?.hidden !== false) document.documentElement.style.overflow = '';
+}
+
+function openInventoryDrawer() {
+  const drawer = $('inventoryDrawer');
+  if (!drawer) return;
+  drawer.hidden = false;
+  document.documentElement.style.overflow = 'hidden';
+  renderInventory();
+  $('inventoryDrawerClose')?.focus({preventScroll:true});
+}
+
+function closeInventoryDrawer() {
+  const drawer = $('inventoryDrawer');
+  if (!drawer) return;
+  drawer.hidden = true;
+  if ($('detailModal')?.hidden !== false) document.documentElement.style.overflow = '';
+}
+
+function setupDetailModal() {
+  $('modalClose')?.addEventListener('click', closeStickerModal);
+  document.querySelector('[data-close-modal]')?.addEventListener('click', closeStickerModal);
+  document.addEventListener('click', event => {
+    const card = event.target.closest('[data-id]');
+    if (!card || event.target.closest('a, button, input, label, select, textarea')) return;
+    const id = card.dataset.id;
+    if (id) openStickerModal(id);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if ($('detailModal')?.hidden === false) closeStickerModal();
+    else if ($('inventoryDrawer')?.hidden === false) closeInventoryDrawer();
+  });
+  $('modalContent')?.addEventListener('click', event => {
+    const add = event.target.closest('[data-add-inventory]');
+    if (add) {
+      event.preventDefault();
+      startInventoryAdd(add.dataset.addInventory);
+      return;
+    }
+    const fetch = event.target.closest('[data-fetch-price]');
+    if (fetch) {
+      event.preventDefault();
+      const r = recordForFetchId(fetch.dataset.fetchPrice);
+      if (r) fetchCsgoskinsPricesFor([r], r.sticker || 'sticker', fetch);
+      return;
+    }
+    const favorite = event.target.closest('[data-favorite]');
+    if (favorite) {
+      event.preventDefault();
+      toggleFavoriteId(favorite.dataset.favorite);
+    }
+  });
+}
+
+function setupInventoryDrawer() {
+  $('inventoryDrawerBtn')?.addEventListener('click', openInventoryDrawer);
+  $('inventoryDrawerInlineBtn')?.addEventListener('click', openInventoryDrawer);
+  $('inventoryDrawerClose')?.addEventListener('click', closeInventoryDrawer);
+  document.querySelector('[data-close-inventory-drawer]')?.addEventListener('click', closeInventoryDrawer);
+}
+
+function toggleFavoriteId(id) {
+  id = String(id || '');
+  if (!id) return;
+  if (favoriteIds.has(id)) favoriteIds.delete(id);
+  else favoriteIds.add(id);
+  saveFavorites();
+  computeSignalSets();
+  applyFiltersPreservingScroll();
+  refreshOpenStickerModal();
+}
+
+function setupFavorites() {
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-favorite]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleFavoriteId(button.dataset.favorite);
+  });
+}
+
+function setupPriceFetch() {
+  $('refreshFavoritePricesBtn')?.addEventListener('click', event => {
+    const favorites = records
+      .filter(r => isFavorite(r) && csgoskinsFetchable(r))
+      .sort((a, b) => normalizedVariant(a).localeCompare(normalizedVariant(b)) || Number(a.priority_rank || 9999) - Number(b.priority_rank || 9999));
+    fetchCsgoskinsPricesFor(favorites, 'favorite stickers', event.currentTarget);
+  });
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-fetch-price]');
+    if (!button || button.closest('#modalContent')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const r = recordForFetchId(button.dataset.fetchPrice);
+    if (r) fetchCsgoskinsPricesFor([r], r.sticker || 'sticker', button);
+  });
 }
 
 function applyFilters() {
@@ -7516,10 +8043,19 @@ function setupSparkTooltip() {
   const tip = $('sparkTip');
   if (!tip) return;
 
-  document.addEventListener('mousemove', event => {
+  const hideTip = () => {
+    tip.style.display = 'none';
+  };
+
+  const pointerPosition = (event) => {
+    const source = event.touches && event.touches.length ? event.touches[0] : event;
+    return {x:source.clientX || 0, y:source.clientY || 0};
+  };
+
+  const showTip = (event) => {
     const target = event.target && event.target.closest ? event.target.closest('.spark-point') : null;
     if (!target) {
-      tip.style.display = 'none';
+      hideTip();
       return;
     }
 
@@ -7528,19 +8064,24 @@ function setupSparkTooltip() {
 
     const pad = 14;
     const rect = tip.getBoundingClientRect();
-    let left = event.clientX + pad;
-    let top = event.clientY + pad;
+    const pos = pointerPosition(event);
+    let left = pos.x + pad;
+    let top = pos.y + pad;
 
-    if (left + rect.width > window.innerWidth - 8) left = event.clientX - rect.width - pad;
-    if (top + rect.height > window.innerHeight - 8) top = event.clientY - rect.height - pad;
+    if (left + rect.width > window.innerWidth - 8) left = pos.x - rect.width - pad;
+    if (top + rect.height > window.innerHeight - 8) top = pos.y - rect.height - pad;
 
     tip.style.left = `${Math.max(8, left)}px`;
     tip.style.top = `${Math.max(8, top)}px`;
-  });
+  };
 
-  document.addEventListener('mouseleave', () => {
-    tip.style.display = 'none';
-  });
+  document.addEventListener('pointermove', showTip, {capture:true, passive:true});
+  document.addEventListener('touchstart', showTip, {capture:true, passive:true});
+  document.addEventListener('touchmove', showTip, {capture:true, passive:true});
+  document.addEventListener('pointerdown', event => {
+    if (!(event.target && event.target.closest && event.target.closest('.spark-point'))) hideTip();
+  }, {capture:true, passive:true});
+  document.addEventListener('mouseleave', hideTip);
 }
 
 function isMobileLayout() {
@@ -7548,7 +8089,7 @@ function isMobileLayout() {
 }
 
 function setupFilterPanel() {
-  const panel = document.getElementById('filterPanel');
+  const panel = $('filterPanel');
   if (!panel) return;
   if (isMobileLayout() && panel.dataset.mobileReady !== '1') {
     panel.removeAttribute('open');
@@ -7562,11 +8103,11 @@ function setupFilterPanel() {
 }
 
 function updateMobileFilterSummary() {
-  const summary = document.getElementById('mobileFilterSummary');
+  const summary = $('mobileFilterSummary');
   if (!summary) return;
   const ids = ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','sortPreset','scoredFilter'];
   const active = ids.reduce((count, id) => {
-    const el = document.getElementById(id);
+    const el = $(id);
     return count + (el && String(el.value || '').trim() ? 1 : 0);
   }, selectedVariants().length ? 1 : 0);
   summary.textContent = active
@@ -7579,142 +8120,6 @@ function setViewMode(mode) {
   renderResults();
 }
 
-function openInventoryDrawer() {
-  const drawer = $('inventoryDrawer');
-  if (!drawer) return;
-  drawer.hidden = false;
-  document.body.style.overflow = 'hidden';
-  renderInventory();
-  $('inventoryDrawerClose')?.focus({preventScroll:true});
-}
-
-function closeInventoryDrawer() {
-  const drawer = $('inventoryDrawer');
-  if (!drawer || drawer.hidden) return;
-  drawer.hidden = true;
-  if ($('detailModal')?.hidden !== false) document.body.style.overflow = '';
-}
-
-function openStickerModal(id, inventoryId=null) {
-  const r = recordById.get(String(id));
-  const modal = $('detailModal');
-  const content = $('modalContent');
-  if (!r || !modal || !content) return;
-  activeStickerModalId = String(id);
-  activeInventoryModalId = inventoryId ? String(inventoryId) : null;
-  const inventoryItem = activeInventoryModalId ? inventoryItems.find(row => row.inventory_id === activeInventoryModalId) : null;
-  content.innerHTML = stickerDetailsHtml(r, inventoryItem || null);
-  modal.hidden = false;
-  document.body.style.overflow = 'hidden';
-  if (!modalHistoryOpen && window.history && window.history.pushState) {
-    window.history.pushState({stickerModal:true}, '', window.location.href);
-    modalHistoryOpen = true;
-  }
-  $('modalClose')?.focus({preventScroll:true});
-}
-
-function closeStickerModal(fromPop=false) {
-  const modal = $('detailModal');
-  if (!modal || modal.hidden) return;
-  modal.hidden = true;
-  if ($('inventoryDrawer')?.hidden !== false) document.body.style.overflow = '';
-  activeStickerModalId = null;
-  activeInventoryModalId = null;
-  const content = $('modalContent');
-  if (content) content.innerHTML = '';
-  if (modalHistoryOpen) {
-    modalHistoryOpen = false;
-    if (!fromPop && window.history) window.history.back();
-  }
-}
-
-function setupDetailModal() {
-  const grid = $('gridView');
-  if (grid) {
-    grid.addEventListener('click', event => {
-      if (event.target && event.target.closest && event.target.closest('[data-favorite]')) return;
-      if (event.target && event.target.closest && event.target.closest('[data-fetch-price]')) return;
-      const card = event.target && event.target.closest ? event.target.closest('.grid-card') : null;
-      if (card) openStickerModal(card.dataset.id);
-    });
-    grid.addEventListener('keydown', event => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      if (event.target && event.target.closest && event.target.closest('[data-favorite]')) return;
-      if (event.target && event.target.closest && event.target.closest('[data-fetch-price]')) return;
-      const card = event.target && event.target.closest ? event.target.closest('.grid-card') : null;
-      if (card) {
-        event.preventDefault();
-        openStickerModal(card.dataset.id);
-      }
-    });
-  }
-  $('portfolioFocus')?.addEventListener('click', event => {
-    const card = event.target && event.target.closest ? event.target.closest('.focus-card[data-id]') : null;
-    if (card) openStickerModal(card.dataset.id);
-  });
-  $('modalContent')?.addEventListener('click', event => {
-    const add = event.target && event.target.closest ? event.target.closest('[data-add-inventory]') : null;
-    if (add) {
-      const stickerId = add.dataset.addInventory;
-      closeStickerModal();
-      startInventoryAdd(stickerId);
-    }
-  });
-  $('modalClose')?.addEventListener('click', closeStickerModal);
-  document.querySelector('[data-close-modal]')?.addEventListener('click', closeStickerModal);
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
-      closeStickerModal();
-      closeInventoryDrawer();
-    }
-  });
-  window.addEventListener('popstate', () => {
-    closeStickerModal(true);
-  });
-}
-
-function setupInventoryDrawer() {
-  $('inventoryDrawerBtn')?.addEventListener('click', openInventoryDrawer);
-  $('inventoryDrawerInlineBtn')?.addEventListener('click', openInventoryDrawer);
-  $('inventoryDrawerClose')?.addEventListener('click', closeInventoryDrawer);
-  document.querySelector('[data-close-inventory-drawer]')?.addEventListener('click', closeInventoryDrawer);
-}
-
-function setupFavorites() {
-  document.addEventListener('click', event => {
-    const button = event.target && event.target.closest ? event.target.closest('[data-favorite]') : null;
-    if (!button) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const id = String(button.dataset.favorite || '');
-    if (!id) return;
-    if (favoriteIds.has(id)) favoriteIds.delete(id);
-    else favoriteIds.add(id);
-    saveFavorites();
-    applyFiltersPreservingScroll();
-  });
-}
-
-function setupPriceFetch() {
-  $('refreshFavoritePricesBtn')?.addEventListener('click', () => {
-    const favoriteRows = records.filter(r => isFavorite(r) && csgoskinsFetchable(r));
-    fetchCsgoskinsPricesFor(favoriteRows, 'favorite stickers');
-  });
-  document.addEventListener('click', event => {
-    const button = event.target && event.target.closest ? event.target.closest('[data-fetch-price]') : null;
-    if (!button) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const r = recordForFetchId(button.dataset.fetchPrice);
-    if (!r) {
-      setPriceFetchStatus('Could not find that sticker in the loaded dashboard data.', 'error');
-      return;
-    }
-    setPriceFetchStatus(`Starting 2P refresh for ${r.sticker || 'selected sticker'}...`, 'busy');
-    fetchCsgoskinsPricesFor([r], r.sticker || 'selected sticker', button);
-  });
-}
-
 function wire() {
   loadFavorites();
   hydratePersistedCsgoskinsPrices();
@@ -7723,7 +8128,7 @@ function wire() {
   setupFilterPanel();
   if ($('inventoryBatchDate') && !$('inventoryBatchDate').value) $('inventoryBatchDate').valueAsDate = new Date();
   ['search','verdictFilter','typeFilter','categoryFilter','entryFilter','floodFilter','confidenceFilter','priceMax','priceStateFilter','favoriteFilter','lowGapMax','sortPreset','rowLimit','scoredFilter']
-    .forEach(id => $(id).addEventListener('input', applyFilters));
+    .forEach(id => $(id)?.addEventListener('input', applyFilters));
   $('variantFilterButton')?.addEventListener('click', toggleVariantMenu);
   variantCheckboxes().forEach(input => input.addEventListener('change', () => {
     syncVariantFilterLabel();
