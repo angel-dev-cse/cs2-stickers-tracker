@@ -21,6 +21,7 @@ SECOND_MARKET_HISTORY_PATH = Path("visualized") / "second_market_history.csv"
 OUT_DIR = Path("analyze")
 DEFAULT_VARIANTS = "Paper,Foil,Holo,Gold"
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+TOKENS_PER_USD = 100 / 0.99
 
 
 # -----------------------------
@@ -393,6 +394,119 @@ def add_second_market_signals(df: pd.DataFrame) -> pd.DataFrame:
     ).clip(0, 1)
     df.loc[pd.to_numeric(df["second_market_true_edge_pct"], errors="coerce") < -20, "second_market_score"] *= 0.45
     df["second_market_score"] = df["second_market_score"].fillna(0).clip(0, 1).round(4)
+    return df
+
+
+def add_effective_market_prices(df: pd.DataFrame) -> pd.DataFrame:
+    """Use the cheapest trusted venue as the model entry price.
+
+    Steam/CS2Tokens history still supplies the price range and demand context,
+    but buy decisions should not pretend Steam is the only entry point when a
+    trusted 2P offer is cheaper.
+    """
+    df = df.copy()
+    steam_usd = pd.to_numeric(df.get("usd_price", np.nan), errors="coerce")
+    steam_tokens = pd.to_numeric(df.get("price_tokens", np.nan), errors="coerce")
+    second_low = pd.to_numeric(df.get("second_market_latest_low_usd", np.nan), errors="coerce")
+    csfloat = pd.to_numeric(df.get("csfloat_latest_usd", np.nan), errors="coerce")
+    uuskins = pd.to_numeric(df.get("uuskins_latest_usd", np.nan), errors="coerce")
+
+    steam_valid = steam_usd.notna() & (steam_usd > 0)
+    second_valid = second_low.notna() & (second_low > 0)
+    use_second = second_valid & (~steam_valid | (second_low < steam_usd))
+
+    token_rate = (steam_tokens / steam_usd).replace([np.inf, -np.inf], np.nan)
+    token_rate = token_rate.where((token_rate > 0) & token_rate.notna(), TOKENS_PER_USD)
+    base_tokens = steam_tokens.where((steam_tokens > 0) & steam_tokens.notna(), steam_usd * TOKENS_PER_USD)
+    effective_usd = steam_usd.where(~use_second, second_low)
+    effective_tokens = base_tokens.where(~use_second, second_low * token_rate)
+
+    source = pd.Series("Steam", index=df.index, dtype="object")
+    is_csfloat = use_second & csfloat.notna() & ((csfloat - second_low).abs() <= 0.01)
+    is_uuskins = use_second & uuskins.notna() & ((uuskins - second_low).abs() <= 0.01)
+    source = source.mask(use_second, "2P")
+    source = source.mask(is_csfloat, "CSFloat")
+    source = source.mask(is_uuskins & ~is_csfloat, "UUSkins")
+    source = source.mask(effective_usd.isna(), "")
+
+    hist_min = pd.to_numeric(df.get("hist_min", np.nan), errors="coerce")
+    hist_max = pd.to_numeric(df.get("hist_max", np.nan), errors="coerce")
+    reference = pd.to_numeric(df.get("robust_reference_price", np.nan), errors="coerce")
+    reference = reference.where(reference > 0, pd.to_numeric(df.get("hist_median", np.nan), errors="coerce"))
+
+    df["effective_usd_price"] = effective_usd.round(4)
+    df["effective_price_tokens"] = effective_tokens.round(2)
+    df["effective_price_source"] = source
+    df["effective_uses_second_market"] = use_second
+    df["effective_discount_to_steam_pct"] = np.where(
+        use_second & steam_valid,
+        ((steam_usd - second_low) / steam_usd) * 100,
+        0,
+    )
+    df["effective_discount_to_steam_pct"] = pd.to_numeric(
+        df["effective_discount_to_steam_pct"], errors="coerce"
+    ).round(2)
+    df["effective_discount_from_high_pct"] = np.where(
+        hist_max > 0,
+        ((hist_max - effective_tokens) / hist_max) * 100,
+        np.nan,
+    )
+    df["effective_upside_to_high_pct"] = np.where(
+        effective_tokens > 0,
+        ((hist_max / effective_tokens) - 1) * 100,
+        np.nan,
+    )
+    df["effective_position_in_range"] = np.where(
+        hist_max > hist_min,
+        (effective_tokens - hist_min) / (hist_max - hist_min),
+        0.5,
+    )
+    df["effective_position_in_range"] = pd.to_numeric(
+        df["effective_position_in_range"], errors="coerce"
+    ).clip(0, 1).fillna(0.5)
+    df["effective_expected_return_pct"] = np.where(
+        (reference > 0) & (effective_tokens > 0),
+        ((reference / effective_tokens) - 1) * 100,
+        np.nan,
+    )
+    df["effective_expected_return_score"] = (
+        pd.to_numeric(df["effective_expected_return_pct"], errors="coerce").fillna(0) / 120
+    ).clip(0, 1).round(4)
+    df["effective_downside_to_floor_pct"] = np.where(
+        (hist_min > 0) & (effective_tokens > 0),
+        np.minimum(((hist_min / effective_tokens) - 1) * 100, 0),
+        np.nan,
+    )
+    df["effective_downside_risk_score"] = (
+        pd.to_numeric(df["effective_downside_to_floor_pct"], errors="coerce").fillna(0).abs() / 80
+    ).clip(0, 1).round(4)
+
+    tiers: list[str] = []
+    scores: list[float] = []
+    for _, row in df.iterrows():
+        tier, score = entry_tier_score_for_price(
+            row.get("effective_price_tokens", np.nan),
+            row.get("category"),
+            row.get("variant"),
+        )
+        tiers.append(tier)
+        scores.append(score)
+    df["effective_entry_tier"] = tiers
+    df["effective_entry_score"] = pd.Series(scores, index=df.index).clip(0, 1).round(4)
+    df["effective_entry_change_score"] = (
+        0.50 * df["effective_entry_score"].fillna(0)
+        + 0.25 * df.get("rank_improvement_score", pd.Series(0, index=df.index)).fillna(0)
+        + 0.25 * df.get("price_drop_opportunity_score", pd.Series(0, index=df.index)).fillna(0)
+    ).clip(0, 1).round(4)
+
+    group_cols = ["category", "variant"]
+    df["effective_rank_low_to_high"] = df.groupby(group_cols)["effective_price_tokens"].rank(method="first", ascending=True)
+    df["effective_total_in_group"] = df.groupby(group_cols)["effective_price_tokens"].transform("count")
+    df["effective_price_percentile"] = (
+        (df["effective_rank_low_to_high"] - 1) / (df["effective_total_in_group"] - 1)
+    ).replace([np.inf, -np.inf], np.nan).fillna(0).clip(0, 1)
+    df["effective_group_median_discount_pct"] = df.groupby(group_cols)["effective_discount_from_high_pct"].transform("median")
+    df["effective_relative_discount_pct"] = df["effective_discount_from_high_pct"] - df["effective_group_median_discount_pct"]
     return df
 
 
@@ -1031,38 +1145,48 @@ def entry_bands(category: str, variant: str) -> list[tuple[float, str, float]]:
     ]
 
 
+def entry_tier_score_for_price(price: object, category: str, variant: str) -> tuple[str, float]:
+    try:
+        price_float = float(price)
+    except Exception:
+        return "Unknown", 0.0
+    if pd.isna(price_float):
+        return "Unknown", 0.0
+
+    chosen_tier = "Premium"
+    chosen_score = 0.0
+    previous_limit = 0.0
+
+    for limit, label, base_score in entry_bands(category, variant):
+        if price_float <= limit:
+            chosen_tier = label
+            # Smoothly decay inside each band except the first.
+            if previous_limit > 0 and np.isfinite(limit):
+                span = max(limit - previous_limit, 1)
+                progress = max(0.0, min(1.0, (price_float - previous_limit) / span))
+                next_score = base_score
+                prev_score = min(1.0, base_score + 0.18)
+                chosen_score = prev_score - (prev_score - next_score) * progress
+            else:
+                chosen_score = base_score
+            break
+        previous_limit = limit
+
+    return chosen_tier, float(chosen_score)
+
+
 def add_entry_tier(df: pd.DataFrame) -> pd.DataFrame:
     tiers: list[str] = []
     scores: list[float] = []
 
     for _, row in df.iterrows():
-        price = float(row.get("price_tokens", np.nan))
-        if pd.isna(price):
-            tiers.append("Unknown")
-            scores.append(0.0)
-            continue
-
-        chosen_tier = "Premium"
-        chosen_score = 0.0
-        previous_limit = 0.0
-
-        for limit, label, base_score in entry_bands(row.get("category"), row.get("variant")):
-            if price <= limit:
-                chosen_tier = label
-                # Smoothly decay inside each band except the first.
-                if previous_limit > 0 and np.isfinite(limit):
-                    span = max(limit - previous_limit, 1)
-                    progress = max(0.0, min(1.0, (price - previous_limit) / span))
-                    next_score = base_score
-                    prev_score = min(1.0, base_score + 0.18)
-                    chosen_score = prev_score - (prev_score - next_score) * progress
-                else:
-                    chosen_score = base_score
-                break
-            previous_limit = limit
-
+        chosen_tier, chosen_score = entry_tier_score_for_price(
+            row.get("price_tokens", np.nan),
+            row.get("category"),
+            row.get("variant"),
+        )
         tiers.append(chosen_tier)
-        scores.append(float(chosen_score))
+        scores.append(chosen_score)
 
     df["entry_tier"] = tiers
     df["entry_score"] = pd.Series(scores, index=df.index).clip(0, 1).round(4)
@@ -1227,18 +1351,41 @@ def add_trend_and_flood(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    discount = (df["discount_from_high_pct"].fillna(0) / 100).clip(0, 1)
-    relative_discount = ((df["relative_discount_pct"].fillna(0) + 50) / 100).clip(0, 1)
-    floor = (1 - df["position_in_range"]).clip(0, 1)
-    rank = (1 - df["price_percentile"]).clip(0, 1)
+    base_position = df["position_in_range"].fillna(0.5).clip(0, 1)
+    position = pd.to_numeric(df.get("effective_position_in_range", base_position), errors="coerce").fillna(base_position).clip(0, 1)
+    discount_source = pd.to_numeric(
+        df.get("effective_discount_from_high_pct", df["discount_from_high_pct"]),
+        errors="coerce",
+    ).fillna(df["discount_from_high_pct"]).fillna(0)
+    relative_discount_source = pd.to_numeric(
+        df.get("effective_relative_discount_pct", df["relative_discount_pct"]),
+        errors="coerce",
+    ).fillna(df["relative_discount_pct"]).fillna(0)
+    price_percentile = pd.to_numeric(
+        df.get("effective_price_percentile", df["price_percentile"]),
+        errors="coerce",
+    ).fillna(df["price_percentile"]).fillna(0)
+    discount = (discount_source / 100).clip(0, 1)
+    relative_discount = ((relative_discount_source + 50) / 100).clip(0, 1)
+    floor = (1 - position).clip(0, 1)
+    rank = (1 - price_percentile).clip(0, 1)
     quality_scaled = ((df["quality_score"] - 5) / 5).clip(0, 1)
     score_confidence = df["score_confidence"].fillna(0).clip(0, 1)
     manual_quality = quality_scaled * (0.35 + 0.65 * score_confidence)
-    entry = df["entry_score"].clip(0, 1)
-    entry_change = df["entry_change_score"].fillna(entry).clip(0, 1)
-    expected = df["expected_return_score"].fillna(0).clip(0, 1)
+    entry = pd.to_numeric(df.get("effective_entry_score", df["entry_score"]), errors="coerce").fillna(df["entry_score"]).clip(0, 1)
+    entry_change = pd.to_numeric(
+        df.get("effective_entry_change_score", df["entry_change_score"]),
+        errors="coerce",
+    ).fillna(df["entry_change_score"]).fillna(entry).clip(0, 1)
+    expected = pd.to_numeric(
+        df.get("effective_expected_return_score", df["expected_return_score"]),
+        errors="coerce",
+    ).fillna(df["expected_return_score"]).fillna(0).clip(0, 1)
     demand = df["demand_momentum_score"].fillna(0.5).clip(0, 1)
-    downside = df["downside_risk_score"].fillna(0).clip(0, 1)
+    downside = pd.to_numeric(
+        df.get("effective_downside_risk_score", df["downside_risk_score"]),
+        errors="coerce",
+    ).fillna(df["downside_risk_score"]).fillna(0).clip(0, 1)
     divergence = df["demand_price_divergence_score"].fillna(0).clip(0, 1)
     falling_demand = df["falling_demand_penalty"].fillna(0).clip(0, 1)
     second_market_score = df["second_market_score"].fillna(0).clip(0, 1) if "second_market_score" in df.columns else pd.Series(0, index=df.index)
@@ -1303,7 +1450,7 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         + 0.05 * ((df["manual_demand_score"].fillna(6) - 5) / 5).clip(0, 1) * score_confidence
         + 0.04 * ((df["manual_color_craft_score"].fillna(6) - 5) / 5).clip(0, 1) * score_confidence
         - 0.13 * df["flood_risk_score"]
-        - 0.08 * df["position_in_range"].clip(0, 1)
+        - 0.08 * position
         - 0.08 * falling_demand
         - 0.10 * second_market_wait
         - 0.07 * uncertainty
@@ -1382,20 +1529,40 @@ def short_percent(value: float | int | str | None, decimals: int = 0, signed: bo
     return f"{sign}{value:.{decimals}f}%"
 
 
+def build_buy_from(row: pd.Series) -> str:
+    source = str(row.get("effective_price_source", "") or "").strip()
+    if not source:
+        source = "Steam"
+    effective_usd = metric_value(row, "effective_usd_price", np.nan)
+    steam_usd = metric_value(row, "usd_price", np.nan)
+    discount = metric_value(row, "effective_discount_to_steam_pct", 0)
+
+    if source != "Steam" and not pd.isna(effective_usd):
+        suffix = f", {discount:.0f}% below Steam" if discount > 0 else ""
+        return f"{source} around ${effective_usd:.2f}{suffix}"
+    if not pd.isna(steam_usd):
+        return f"Steam around ${steam_usd:.2f}"
+    return source
+
+
 def build_quick_reason(row: pd.Series) -> str:
     """Small table-friendly reason. Full metrics remain in debug_metrics.csv."""
     parts: list[str] = []
-    discount = row.get("discount_from_high_pct", np.nan)
-    upside = row.get("upside_to_high_pct", np.nan)
-    expected = row.get("expected_return_pct", np.nan)
+    discount = row.get("effective_discount_from_high_pct", row.get("discount_from_high_pct", np.nan))
+    upside = row.get("effective_upside_to_high_pct", row.get("upside_to_high_pct", np.nan))
+    expected = row.get("effective_expected_return_pct", row.get("expected_return_pct", np.nan))
     launch = row.get("launch_gap_pct", np.nan)
     trend = str(row.get("trend_signal", "") or "")
     demand = row.get("demand_momentum_score", np.nan)
+    source = str(row.get("effective_price_source", "") or "")
+    source_discount = metric_value(row, "effective_discount_to_steam_pct", 0)
 
     if pd.notna(expected):
         parts.append(f"{expected:+.0f}% expected")
     if pd.notna(demand):
         parts.append(f"{float(demand):.2f} demand")
+    if source and source != "Steam" and source_discount > 0:
+        parts.append(f"{source} {source_discount:.0f}% below Steam")
     if pd.notna(discount):
         parts.append(f"{discount:.0f}% below high")
     if pd.notna(upside):
@@ -1427,16 +1594,17 @@ def build_quick_reason(row: pd.Series) -> str:
 
 def build_action_note(row: pd.Series) -> str:
     verdict = str(row.get("verdict", ""))
+    location = str(row.get("buy_from", "") or build_buy_from(row))
     if metric_value(row, "second_market_wait_penalty", 0) >= 0.62:
         return "2P market is still making lower lows; wait for stabilization before adding."
     if metric_value(row, "second_market_true_edge_pct", 0) < -20 and metric_value(row, "second_market_latest_low_usd", np.nan) > 0:
         return "2P is cheaper than current Steam but still above Steam's recorded low; wait for a stronger entry."
     if verdict == "CORE BUY CANDIDATE":
-        return "Best scored candidate; still size carefully."
+        return f"Best scored candidate; prefer {location}; still size carefully."
     if verdict == "SMALL BUY":
-        return "Small position only; not a core hold."
+        return f"Small position only; prefer {location}; not a core hold."
     if verdict == "CHEAP HISTORY PUNT":
-        return "Cheap punt; small size is acceptable even before full scoring."
+        return f"Cheap punt; prefer {location}; small size is acceptable even before full scoring."
     if verdict == "VISUAL CHECK NOW":
         return "Open preview, score it, then rerun analysis."
     if verdict == "SCORE FIRST":
@@ -1459,7 +1627,7 @@ def build_risk_note(row: pd.Series) -> str:
         risks.append(f"{flood} crowding")
     if metric_value(row, "lower_high_count") >= 1:
         risks.append("lower highs")
-    if metric_value(row, "position_in_range", 0.5) >= 0.70:
+    if metric_value(row, "effective_position_in_range", metric_value(row, "position_in_range", 0.5)) >= 0.70:
         risks.append("near range high")
     if metric_value(row, "falling_demand_penalty") >= 0.45:
         risks.append("falling demand")
@@ -1478,7 +1646,7 @@ def build_risk_note(row: pd.Series) -> str:
 
 def suggested_size(row: pd.Series) -> str:
     verdict = row.get("verdict", "")
-    price = row.get("price_tokens", np.nan)
+    price = row.get("effective_price_tokens", row.get("price_tokens", np.nan))
     category = str(row.get("category", ""))
 
     if verdict == "CORE BUY CANDIDATE":
@@ -1628,6 +1796,7 @@ def compact_outputs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
     df["sticker"] = df["name"].map(clean_name)
     df["verdict"] = df.apply(final_verdict, axis=1)
     df["suggested_size"] = df.apply(suggested_size, axis=1)
+    df["buy_from"] = df.apply(build_buy_from, axis=1)
     df["quick_reason"] = df.apply(build_quick_reason, axis=1)
     df["action_note"] = df.apply(build_action_note, axis=1)
     df["risk_note"] = df.apply(build_risk_note, axis=1)
@@ -1645,8 +1814,15 @@ def compact_outputs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
         "team",
         "price_tokens",
         "usd_price",
+        "effective_price_tokens",
+        "effective_usd_price",
+        "effective_price_source",
+        "effective_uses_second_market",
+        "effective_discount_to_steam_pct",
+        "buy_from",
         "suggested_size",
         "entry_tier",
+        "effective_entry_tier",
         "flood_risk",
         "quality_score",
         "history_score",
@@ -1656,6 +1832,8 @@ def compact_outputs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
         "trend_score",
         "expected_return_pct",
         "expected_return_score",
+        "effective_expected_return_pct",
+        "effective_expected_return_score",
         "robust_reference_price",
         "robust_peak_price",
         "discount_from_robust_peak_pct",
@@ -1672,6 +1850,14 @@ def compact_outputs(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
         "discount_from_high_pct",
         "upside_to_high_pct",
         "position_in_range",
+        "effective_discount_from_high_pct",
+        "effective_upside_to_high_pct",
+        "effective_position_in_range",
+        "effective_downside_to_floor_pct",
+        "effective_downside_risk_score",
+        "effective_entry_score",
+        "effective_entry_change_score",
+        "effective_price_percentile",
         "trend_signal",
         "quick_reason",
         "risk_note",
@@ -1842,6 +2028,7 @@ def main() -> None:
     df = add_entry_tier(df)
     df = add_trend_and_flood(df)
     df = add_second_market_signals(df)
+    df = add_effective_market_prices(df)
     df = add_signal_scores(df)
     df = add_portfolio_fields(df)
 

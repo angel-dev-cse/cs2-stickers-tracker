@@ -30,18 +30,18 @@
   "https://csgoskins.gg/items/sticker-910-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-910-holo-cologne-2026",
-    "fetched_at": 1780596934,
+    "fetched_at": 1780631890,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312674,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 4.67,
-      "UUSkins": 4.14
+      "UUSkins": 4.13
     },
-    "price": 4.14,
+    "price": 4.06,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -76,18 +76,18 @@
   "https://csgoskins.gg/items/sticker-9z-team-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-9z-team-holo-cologne-2026",
-    "fetched_at": 1780601026,
+    "fetched_at": 1780631862,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312674,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 5.34,
-      "UUSkins": 4.03
+      "UUSkins": 3.98
     },
-    "price": 4.03,
+    "price": 3.98,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -113,12 +113,12 @@
   "https://csgoskins.gg/items/sticker-afro-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-afro-holo-cologne-2026",
-    "fetched_at": 1780596934,
+    "fetched_at": 1780631890,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312674,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 3.5,
@@ -153,18 +153,18 @@
   "https://csgoskins.gg/items/sticker-aleksib-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-aleksib-holo-cologne-2026",
-    "fetched_at": 1780596934,
+    "fetched_at": 1780631890,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312675,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 9.28,
       "UUSkins": 12.55
     },
-    "price": 9.28,
+    "price": 5.69,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -197,8 +197,8 @@
   "https://csgoskins.gg/items/sticker-alex666-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-alex666-holo-cologne-2026",
-    "fetched_at": 1780596936,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631890,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780315067,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -206,9 +206,9 @@
     },
     "markets": {
       "CSFloat": 3.49,
-      "UUSkins": 2.78
+      "UUSkins": 2.81
     },
-    "price": 2.78,
+    "price": 2.81,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -237,18 +237,18 @@
   "https://csgoskins.gg/items/sticker-alistair-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-alistair-holo-cologne-2026",
-    "fetched_at": 1780601023,
+    "fetched_at": 1780631862,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312668,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 4.19,
-      "UUSkins": 2.13
+      "CSFloat": 3.73,
+      "UUSkins": 2.18
     },
-    "price": 2.13,
+    "price": 2.06,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -281,18 +281,18 @@
   "https://csgoskins.gg/items/sticker-apex-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-apex-holo-cologne-2026",
-    "fetched_at": 1780596936,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631890,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312675,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 12.85,
-      "UUSkins": 10.34
+      "CSFloat": 11.74,
+      "UUSkins": 10.16
     },
-    "price": 10.34,
+    "price": 10.16,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -321,8 +321,8 @@
   "https://csgoskins.gg/items/sticker-art-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-art-holo-cologne-2026",
-    "fetched_at": 1780596936,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631891,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312675,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -367,18 +367,18 @@
   "https://csgoskins.gg/items/sticker-asap-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-asap-holo-cologne-2026",
-    "fetched_at": 1780601036,
+    "fetched_at": 1780631862,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312668,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 13.5,
-      "UUSkins": 5.9
+      "CSFloat": 4.61,
+      "UUSkins": 5.88
     },
-    "price": 5.9,
+    "price": 4.61,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -413,18 +413,18 @@
   "https://csgoskins.gg/items/sticker-astralis-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-astralis-holo-cologne-2026",
-    "fetched_at": 1780601001,
+    "fetched_at": 1780631863,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315062,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 8.76,
-      "UUSkins": 6.94
+      "CSFloat": 8.47,
+      "UUSkins": 6.93
     },
-    "price": 6.94,
+    "price": 6.29,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -459,18 +459,18 @@
   "https://csgoskins.gg/items/sticker-aurora-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-aurora-holo-cologne-2026",
-    "fetched_at": 1780601002,
+    "fetched_at": 1780631863,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312675,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 7.54,
-      "UUSkins": 4.71
+      "CSFloat": 6.18,
+      "UUSkins": 4.43
     },
-    "price": 4.71,
+    "price": 4.43,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -503,12 +503,12 @@
   "https://csgoskins.gg/items/sticker-azuwu-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-azuwu-holo-cologne-2026",
-    "fetched_at": 1780596938,
+    "fetched_at": 1780631892,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315067,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 2.87,
@@ -543,18 +543,18 @@
   "https://csgoskins.gg/items/sticker-b1t-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-b1t-holo-cologne-2026",
-    "fetched_at": 1780596938,
+    "fetched_at": 1780631892,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312676,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 7.69,
+      "CSFloat": 4.49,
       "UUSkins": 6.65
     },
-    "price": 6.65,
+    "price": 4.49,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -587,15 +587,15 @@
   "https://csgoskins.gg/items/sticker-b8-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-b8-holo-cologne-2026",
-    "fetched_at": 1780601044,
+    "fetched_at": 1780631863,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312676,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 6.0,
+      "CSFloat": 5.4,
       "UUSkins": 4.24
     },
     "price": 4.24,
@@ -627,18 +627,18 @@
   "https://csgoskins.gg/items/sticker-beastik-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-beastik-holo-cologne-2026",
-    "fetched_at": 1780596938,
+    "fetched_at": 1780631892,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315067,
     "market_sources": {
       "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 11.64,
-      "UUSkins": 1.19
+      "UUSkins": 1.47
     },
-    "price": 1.19,
+    "price": 1.47,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -667,15 +667,15 @@
   "https://csgoskins.gg/items/sticker-belchonokk-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-belchonokk-holo-cologne-2026",
-    "fetched_at": 1780601023,
+    "fetched_at": 1780631864,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315062,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 1.56,
+      "CSFloat": 3.49,
       "UUSkins": 0.96
     },
     "price": 0.96,
@@ -713,18 +713,18 @@
   "https://csgoskins.gg/items/sticker-betboom-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-betboom-holo-cologne-2026",
-    "fetched_at": 1780601035,
+    "fetched_at": 1780631864,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312668,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 10.34,
-      "UUSkins": 6.35
+      "CSFloat": 6.75,
+      "UUSkins": 6.32
     },
-    "price": 6.35,
+    "price": 6.32,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -753,15 +753,15 @@
   "https://csgoskins.gg/items/sticker-big-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-big-holo-cologne-2026",
-    "fetched_at": 1780601031,
+    "fetched_at": 1780631864,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312676,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 6.0,
+      "CSFloat": 6.09,
       "UUSkins": 3.66
     },
     "price": 3.66,
@@ -791,20 +791,20 @@
     "status": "error: HTTP 403"
   },
   "https://csgoskins.gg/items/sticker-biguzera-holo-cologne-2026": {
-    "fallback_status": "no_skinsniper_market_detail",
+    "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-biguzera-holo-cologne-2026",
-    "fetched_at": 1780596940,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631893,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312676,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 1.72,
-      "UUSkins": 0.87
+      "CSFloat": 1.73,
+      "UUSkins": 0.82
     },
-    "price": 0.87,
+    "price": 0.82,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -837,18 +837,18 @@
   "https://csgoskins.gg/items/sticker-blamef-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-blamef-holo-cologne-2026",
-    "fetched_at": 1780596940,
+    "fetched_at": 1780631893,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312676,
     "market_sources": {
       "CSFloat": "CSGOSkins",
-      "UUSkins": "UUSkins"
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 4.0,
+      "CSFloat": 2.87,
       "UUSkins": 4.42
     },
-    "price": 4.0,
+    "price": 2.87,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -877,15 +877,15 @@
   "https://csgoskins.gg/items/sticker-blitz-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-blitz-holo-cologne-2026",
-    "fetched_at": 1780596940,
+    "fetched_at": 1780631894,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312677,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 2.39,
+      "CSFloat": 2.69,
       "UUSkins": 0.89
     },
     "price": 0.89,
@@ -923,18 +923,18 @@
   "https://csgoskins.gg/items/sticker-boombl4-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-boombl4-holo-cologne-2026",
-    "fetched_at": 1780600998,
+    "fetched_at": 1780631864,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312668,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 20.0,
-      "UUSkins": 4.88
+      "UUSkins": 5.01
     },
-    "price": 4.88,
+    "price": 5.01,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -967,18 +967,18 @@
   "https://csgoskins.gg/items/sticker-br0-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-br0-holo-cologne-2026",
-    "fetched_at": 1780601007,
+    "fetched_at": 1780631865,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315068,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 4.6,
-      "UUSkins": 2.51
+      "CSFloat": 3.7,
+      "UUSkins": 1.78
     },
-    "price": 2.51,
+    "price": 1.77,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1011,18 +1011,18 @@
   "https://csgoskins.gg/items/sticker-brnz4n-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-brnz4n-holo-cologne-2026",
-    "fetched_at": 1780601051,
+    "fetched_at": 1780631894,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312677,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 2.6,
       "UUSkins": 1.7
     },
-    "price": 1.7,
+    "price": 1.45,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1051,18 +1051,18 @@
   "https://csgoskins.gg/items/sticker-brollan-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-brollan-holo-cologne-2026",
-    "fetched_at": 1780601049,
+    "fetched_at": 1780631894,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312677,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 1.79,
+      "CSFloat": 2.0,
       "UUSkins": 1.58
     },
-    "price": 1.58,
+    "price": 1.48,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1093,18 +1093,18 @@
   "https://csgoskins.gg/items/sticker-bymas-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-bymas-holo-cologne-2026",
-    "fetched_at": 1780596942,
+    "fetched_at": 1780631895,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315068,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 7.65,
       "UUSkins": 4.43
     },
-    "price": 4.43,
+    "price": 3.82,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1346,11 +1346,11 @@
   "https://csgoskins.gg/items/sticker-dexter-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-dexter-holo-cologne-2026",
-    "fetched_at": 1780601005,
+    "fetched_at": 1780631865,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 14.04,
@@ -1433,18 +1433,18 @@
   "https://csgoskins.gg/items/sticker-doc-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-doc-holo-cologne-2026",
-    "fetched_at": 1780601004,
+    "fetched_at": 1780631865,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315071,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 3.0,
-      "UUSkins": 2.59
+      "CSFloat": 2.25,
+      "UUSkins": 1.78
     },
-    "price": 2.59,
+    "price": 1.77,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1479,18 +1479,18 @@
   "https://csgoskins.gg/items/sticker-donk-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-donk-holo-cologne-2026",
-    "fetched_at": 1780601045,
+    "fetched_at": 1780631865,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312669,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 130.33,
-      "UUSkins": 30.05
+      "CSFloat": 31.09,
+      "UUSkins": 35.14
     },
-    "price": 30.05,
+    "price": 30.57,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1610,18 +1610,18 @@
   "https://csgoskins.gg/items/sticker-elige-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-elige-holo-cologne-2026",
-    "fetched_at": 1780601021,
+    "fetched_at": 1780631865,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312973,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 8.1,
-      "UUSkins": 3.68
+      "CSFloat": 8.0,
+      "UUSkins": 3.25
     },
-    "price": 3.68,
+    "price": 2.72,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1656,17 +1656,17 @@
   "https://csgoskins.gg/items/sticker-emiliaqaq-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-emiliaqaq-holo-cologne-2026",
-    "fetched_at": 1780601046,
+    "fetched_at": 1780631865,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 5.75,
-      "UUSkins": 1.5
+      "CSFloat": 1.85,
+      "UUSkins": 1.48
     },
-    "price": 1.5,
+    "price": 1.48,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1741,18 +1741,18 @@
   "https://csgoskins.gg/items/sticker-falcons-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-falcons-holo-cologne-2026",
-    "fetched_at": 1780601037,
+    "fetched_at": 1780631866,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312669,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 26.99,
-      "UUSkins": 21.19
+      "CSFloat": 28.79,
+      "UUSkins": 24.81
     },
-    "price": 21.19,
+    "price": 20.73,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1910,18 +1910,18 @@
   "https://csgoskins.gg/items/sticker-fl4mus-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-fl4mus-holo-cologne-2026",
-    "fetched_at": 1780600998,
+    "fetched_at": 1780631866,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312679,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 6.55,
-      "UUSkins": 2.07
+      "CSFloat": 1.92,
+      "UUSkins": 2.06
     },
-    "price": 2.07,
+    "price": 1.92,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -1999,18 +1999,18 @@
   "https://csgoskins.gg/items/sticker-flyquest-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-flyquest-holo-cologne-2026",
-    "fetched_at": 1780601019,
+    "fetched_at": 1780631866,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312669,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 10.3,
-      "UUSkins": 7.98
+      "CSFloat": 10.0,
+      "UUSkins": 8.24
     },
-    "price": 7.98,
+    "price": 8.24,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -2043,15 +2043,15 @@
   "https://csgoskins.gg/items/sticker-furia-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-furia-holo-cologne-2026",
-    "fetched_at": 1780601009,
+    "fetched_at": 1780631866,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312679,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 19.2,
+      "CSFloat": 17.56,
       "UUSkins": 13.13
     },
     "price": 13.13,
@@ -2087,15 +2087,15 @@
   "https://csgoskins.gg/items/sticker-fut-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-fut-holo-cologne-2026",
-    "fetched_at": 1780601038,
+    "fetched_at": 1780631866,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312669,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 6.0,
+      "CSFloat": 5.75,
       "UUSkins": 5.32
     },
     "price": 5.32,
@@ -2131,18 +2131,18 @@
   "https://csgoskins.gg/items/sticker-g2-esports-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-g2-esports-holo-cologne-2026",
-    "fetched_at": 1780601011,
+    "fetched_at": 1780631866,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312680,
     "market_sources": {
       "CSFloat": "CSGOSkins",
-      "UUSkins": "UUSkins"
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 5.38,
-      "UUSkins": 4.35
+      "CSFloat": 4.29,
+      "UUSkins": 4.34
     },
-    "price": 4.35,
+    "price": 4.29,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -2171,8 +2171,8 @@
   "https://csgoskins.gg/items/sticker-gafolo-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-gafolo-holo-cologne-2026",
-    "fetched_at": 1780601003,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631867,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312669,
     "market_sources": {
       "CSFloat": "CSGOSkins",
@@ -2180,9 +2180,9 @@
     },
     "markets": {
       "CSFloat": 1.37,
-      "UUSkins": 0.89
+      "UUSkins": 0.96
     },
-    "price": 0.89,
+    "price": 0.96,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -2215,15 +2215,15 @@
   "https://csgoskins.gg/items/sticker-gaimin-gladiators-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-gaimin-gladiators-holo-cologne-2026",
-    "fetched_at": 1780601007,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631867,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312680,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 5.11,
+      "CSFloat": 6.64,
       "UUSkins": 3.67
     },
     "price": 3.67,
@@ -2259,15 +2259,15 @@
   "https://csgoskins.gg/items/sticker-gamerlegion-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-gamerlegion-holo-cologne-2026",
-    "fetched_at": 1780601029,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631867,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312680,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 11.4,
+      "CSFloat": 17.4,
       "UUSkins": 8.12
     },
     "price": 8.12,
@@ -2515,18 +2515,18 @@
   "https://csgoskins.gg/items/sticker-heroic-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-heroic-holo-cologne-2026",
-    "fetched_at": 1780601013,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631871,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312681,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 3.47,
-      "UUSkins": 2.91
+      "CSFloat": 3.32,
+      "UUSkins": 2.81
     },
-    "price": 2.91,
+    "price": 2.81,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -2722,18 +2722,18 @@
   "https://csgoskins.gg/items/sticker-iem-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-iem-holo-cologne-2026",
-    "fetched_at": 1780601039,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631871,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312669,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 24.25,
-      "UUSkins": 11.77
+      "CSFloat": 23.99,
+      "UUSkins": 14.03
     },
-    "price": 11.77,
+    "price": 14.03,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -2927,17 +2927,17 @@
   "https://csgoskins.gg/items/sticker-jame-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-jame-holo-cologne-2026",
-    "fetched_at": 1780601043,
+    "fetched_at": 1780631871,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 5.82,
-      "UUSkins": 4.12
+      "UUSkins": 4.05
     },
-    "price": 4.12,
+    "price": 4.05,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -2969,18 +2969,18 @@
   "https://csgoskins.gg/items/sticker-jamyoung-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-jamyoung-holo-cologne-2026",
-    "fetched_at": 1780601035,
+    "fetched_at": 1780631872,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312682,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 7.09,
-      "UUSkins": 6.19
+      "UUSkins": 6.5
     },
-    "price": 6.19,
+    "price": 6.47,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3057,17 +3057,17 @@
   "https://csgoskins.gg/items/sticker-jdc-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-jdc-holo-cologne-2026",
-    "fetched_at": 1780601025,
+    "fetched_at": 1780631872,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 5.0,
-      "UUSkins": 2.81
+      "UUSkins": 3.08
     },
-    "price": 2.81,
+    "price": 3.08,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3097,15 +3097,15 @@
   "https://csgoskins.gg/items/sticker-jee-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-jee-holo-cologne-2026",
-    "fetched_at": 1780601041,
+    "fetched_at": 1780631873,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312682,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 20.0,
+      "CSFloat": 3.69,
       "UUSkins": 2.94
     },
     "price": 2.94,
@@ -3387,15 +3387,15 @@
   "https://csgoskins.gg/items/sticker-koala-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-koala-holo-cologne-2026",
-    "fetched_at": 1780601040,
+    "fetched_at": 1780631873,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315062,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 3.32,
+      "CSFloat": 2.2,
       "UUSkins": 1.46
     },
     "price": 1.46,
@@ -3508,18 +3508,18 @@
   "https://csgoskins.gg/items/sticker-kyousuke-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-kyousuke-holo-cologne-2026",
-    "fetched_at": 1780601039,
+    "fetched_at": 1780631873,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312670,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 44.73,
+      "CSFloat": 16.77,
       "UUSkins": 17.42
     },
-    "price": 17.42,
+    "price": 16.77,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3548,8 +3548,8 @@
   "https://csgoskins.gg/items/sticker-kyxsan-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-kyxsan-holo-cologne-2026",
-    "fetched_at": 1780601030,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631874,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780301117,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -3557,9 +3557,9 @@
     },
     "markets": {
       "CSFloat": 10.0,
-      "UUSkins": 2.71
+      "UUSkins": 2.69
     },
-    "price": 2.71,
+    "price": 2.69,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3715,18 +3715,18 @@
   "https://csgoskins.gg/items/sticker-legacy-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-legacy-holo-cologne-2026",
-    "fetched_at": 1780601015,
+    "fetched_at": 1780631874,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301119,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 7.2,
-      "UUSkins": 5.76
+      "CSFloat": 7.01,
+      "UUSkins": 5.16
     },
-    "price": 5.76,
+    "price": 5.16,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3757,18 +3757,18 @@
   "https://csgoskins.gg/items/sticker-liazz-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-liazz-holo-cologne-2026",
-    "fetched_at": 1780601008,
+    "fetched_at": 1780631874,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312670,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 3.67,
-      "UUSkins": 2.66
+      "CSFloat": 3.2,
+      "UUSkins": 2.65
     },
-    "price": 2.66,
+    "price": 2.58,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3926,18 +3926,18 @@
   "https://csgoskins.gg/items/sticker-lynn-vision-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-lynn-vision-holo-cologne-2026",
-    "fetched_at": 1780601015,
+    "fetched_at": 1780631875,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312670,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 6.75,
-      "UUSkins": 6.5
+      "CSFloat": 6.63,
+      "UUSkins": 5.91
     },
-    "price": 6.5,
+    "price": 5.91,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -3969,18 +3969,18 @@
   "https://csgoskins.gg/items/sticker-m0nesy-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-m0nesy-holo-cologne-2026",
-    "fetched_at": 1780601014,
+    "fetched_at": 1780631875,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301121,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 26.97,
-      "UUSkins": 18.9
+      "CSFloat": 21.27,
+      "UUSkins": 19.2
     },
-    "price": 18.9,
+    "price": 19.2,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4013,15 +4013,15 @@
   "https://csgoskins.gg/items/sticker-m80-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-m80-holo-cologne-2026",
-    "fetched_at": 1780601025,
+    "fetched_at": 1780631876,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312670,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 11.82,
+      "CSFloat": 9.4,
       "UUSkins": 6.04
     },
     "price": 6.04,
@@ -4097,18 +4097,18 @@
   "https://csgoskins.gg/items/sticker-magnojez-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-magnojez-holo-cologne-2026",
-    "fetched_at": 1780600994,
+    "fetched_at": 1780631876,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312671,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 5.57,
+      "CSFloat": 2.23,
       "UUSkins": 2.96
     },
-    "price": 2.96,
+    "price": 2.23,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4225,18 +4225,18 @@
   "https://csgoskins.gg/items/sticker-malbsmd-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-malbsmd-holo-cologne-2026",
-    "fetched_at": 1780601033,
+    "fetched_at": 1780631876,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301122,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 1.43,
-      "UUSkins": 1.32
+      "UUSkins": 1.31
     },
-    "price": 1.32,
+    "price": 1.05,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4353,18 +4353,18 @@
   "https://csgoskins.gg/items/sticker-maxxkor-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-maxxkor-holo-cologne-2026",
-    "fetched_at": 1780601000,
+    "fetched_at": 1780631877,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315084,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 1.63,
-      "UUSkins": 0.98
+      "CSFloat": 0.81,
+      "UUSkins": 1.0
     },
-    "price": 0.98,
+    "price": 0.81,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4397,18 +4397,18 @@
   "https://csgoskins.gg/items/sticker-mercury-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-mercury-holo-cologne-2026",
-    "fetched_at": 1780601027,
+    "fetched_at": 1780631877,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312671,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 3.75,
-      "UUSkins": 1.67
+      "CSFloat": 2.66,
+      "UUSkins": 1.64
     },
-    "price": 1.67,
+    "price": 1.64,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4520,8 +4520,8 @@
   "https://csgoskins.gg/items/sticker-mibr-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-mibr-holo-cologne-2026",
-    "fetched_at": 1780601019,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631877,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780301124,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -4529,9 +4529,9 @@
     },
     "markets": {
       "CSFloat": 3.7,
-      "UUSkins": 2.9
+      "UUSkins": 2.87
     },
-    "price": 2.9,
+    "price": 2.87,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4645,18 +4645,18 @@
   "https://csgoskins.gg/items/sticker-monte-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-monte-holo-cologne-2026",
-    "fetched_at": 1780601027,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631878,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780301126,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 9.0,
-      "UUSkins": 4.43
+      "CSFloat": 8.71,
+      "UUSkins": 4.42
     },
-    "price": 4.43,
+    "price": 4.42,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4688,18 +4688,18 @@
   "https://csgoskins.gg/items/sticker-moseyuh-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-moseyuh-holo-cologne-2026",
-    "fetched_at": 1780601021,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631878,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312671,
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "CSFloat": 3.95,
-      "UUSkins": 2.46
+      "CSFloat": 2.65,
+      "UUSkins": 2.41
     },
-    "price": 2.46,
+    "price": 2.41,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4729,18 +4729,18 @@
   "https://csgoskins.gg/items/sticker-mouz-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-mouz-holo-cologne-2026",
-    "fetched_at": 1780601011,
+    "fetched_at": 1780631879,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301126,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 10.62,
-      "UUSkins": 6.94
+      "CSFloat": 10.03,
+      "UUSkins": 7.02
     },
-    "price": 6.94,
+    "price": 7.02,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -4855,14 +4855,14 @@
   "https://csgoskins.gg/items/sticker-naf-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-naf-holo-cologne-2026",
-    "fetched_at": 1780601022,
+    "fetched_at": 1780631879,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 2.21,
+      "CSFloat": 2.25,
       "UUSkins": 1.61
     },
     "price": 1.61,
@@ -4897,18 +4897,18 @@
   "https://csgoskins.gg/items/sticker-natus-vincere-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-natus-vincere-holo-cologne-2026",
-    "fetched_at": 1780601029,
+    "fetched_at": 1780631879,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312671,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 25.0,
-      "UUSkins": 15.95
+      "CSFloat": 20.33,
+      "UUSkins": 18.3
     },
-    "price": 15.95,
+    "price": 15.51,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -5064,17 +5064,17 @@
   "https://csgoskins.gg/items/sticker-niko-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-niko-holo-cologne-2026",
-    "fetched_at": 1780601031,
+    "fetched_at": 1780631879,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 65.16,
-      "UUSkins": 12.67
+      "CSFloat": 12.57,
+      "UUSkins": 12.7
     },
-    "price": 12.67,
+    "price": 12.57,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -5297,12 +5297,12 @@
   "https://csgoskins.gg/items/sticker-nrg-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-nrg-holo-cologne-2026",
-    "fetched_at": 1780601016,
+    "fetched_at": 1780631880,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312671,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 11.6,
@@ -5334,18 +5334,18 @@
   "https://csgoskins.gg/items/sticker-osee-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-osee-holo-cologne-2026",
-    "fetched_at": 1780601037,
+    "fetched_at": 1780631880,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315064,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 2.09,
+      "CSFloat": 2.1,
       "UUSkins": 1.85
     },
-    "price": 1.85,
+    "price": 1.79,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -5371,15 +5371,15 @@
   "https://csgoskins.gg/items/sticker-pain-gaming-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-pain-gaming-holo-cologne-2026",
-    "fetched_at": 1780601024,
+    "fetched_at": 1780631880,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312672,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 4.6,
+      "CSFloat": 5.23,
       "UUSkins": 3.99
     },
     "price": 3.99,
@@ -5416,8 +5416,8 @@
   "https://csgoskins.gg/items/sticker-parivision-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-parivision-holo-cologne-2026",
-    "fetched_at": 1780601034,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631881,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312672,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -5437,12 +5437,17 @@
     "status": "no_trusted_price"
   },
   "https://csgoskins.gg/items/sticker-phzy-foil-cologne-2026": {
-    "fallback_status": "no_skinsniper_market_detail",
+    "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-phzy-foil-cologne-2026",
-    "fetched_at": 1780423703,
-    "markets": {},
-    "price": null,
-    "status": "error: HTTP 403",
+    "fetched_at": 1780631934,
+    "market_sources": {
+      "CSFloat": "SkinSniper"
+    },
+    "markets": {
+      "CSFloat": 8.06
+    },
+    "price": 8.06,
+    "status": "ok",
     "uuskins_status": "uuskins no_match code 0"
   },
   "https://csgoskins.gg/items/sticker-phzy-gold-cologne-2026": {
@@ -5584,10 +5589,11 @@
   "https://csgoskins.gg/items/sticker-rdnzao-foil-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-rdnzao-foil-cologne-2026",
-    "fetched_at": 1780423705,
+    "fetched_at": 1780631934,
+    "market_sources": {},
     "markets": {},
-    "price": null,
-    "status": "error: HTTP 403",
+    "price": 0.36,
+    "status": "ok",
     "uuskins_status": "uuskins no_match code 0"
   },
   "https://csgoskins.gg/items/sticker-rdnzao-gold-cologne-2026": {
@@ -5598,8 +5604,8 @@
   "https://csgoskins.gg/items/sticker-rdnzao-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-rdnzao-holo-cologne-2026",
-    "fetched_at": 1780600994,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631881,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312973,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -5681,15 +5687,15 @@
   "https://csgoskins.gg/items/sticker-ropz-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-ropz-holo-cologne-2026",
-    "fetched_at": 1780601042,
+    "fetched_at": 1780631881,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301134,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 130.33,
+      "CSFloat": 24.11,
       "UUSkins": 22.15
     },
     "price": 22.15,
@@ -5718,17 +5724,17 @@
   "https://csgoskins.gg/items/sticker-ryu-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-ryu-holo-cologne-2026",
-    "fetched_at": 1780601043,
+    "fetched_at": 1780631882,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 1.7,
+      "CSFloat": 1.61,
       "UUSkins": 2.65
     },
-    "price": 1.7,
+    "price": 1.61,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -5761,11 +5767,11 @@
   "https://csgoskins.gg/items/sticker-s1n-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-s1n-holo-cologne-2026",
-    "fetched_at": 1780601012,
+    "fetched_at": 1780631882,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 2.87,
@@ -5797,18 +5803,18 @@
   "https://csgoskins.gg/items/sticker-s1ren-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-s1ren-holo-cologne-2026",
-    "fetched_at": 1780601006,
+    "fetched_at": 1780631882,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312973,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 7.0,
+      "CSFloat": 3.31,
       "UUSkins": 5.17
     },
-    "price": 5.17,
+    "price": 3.31,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -5960,18 +5966,18 @@
   "https://csgoskins.gg/items/sticker-sharks-esports-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-sharks-esports-holo-cologne-2026",
-    "fetched_at": 1780601017,
+    "fetched_at": 1780631882,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312672,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 13.34,
-      "UUSkins": 5.79
+      "CSFloat": 7.47,
+      "UUSkins": 6.5
     },
-    "price": 5.79,
+    "price": 5.7,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -6033,16 +6039,16 @@
   "https://csgoskins.gg/items/sticker-sinners-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-sinners-holo-cologne-2026",
-    "fetched_at": 1780601045,
+    "fetched_at": 1780631883,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315064,
     "market_sources": {
-      "UUSkins": "UUSkins"
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "UUSkins": 10.34
+      "UUSkins": 10.32
     },
-    "price": 10.34,
+    "price": 10.32,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -6705,18 +6711,18 @@
   "https://csgoskins.gg/items/sticker-team-liquid-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-team-liquid-holo-cologne-2026",
-    "fetched_at": 1780601033,
+    "fetched_at": 1780631883,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312673,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 46.9,
-      "UUSkins": 18.46
+      "CSFloat": 19.74,
+      "UUSkins": 16.98
     },
-    "price": 18.46,
+    "price": 16.98,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -6750,18 +6756,18 @@
   "https://csgoskins.gg/items/sticker-team-spirit-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-team-spirit-holo-cologne-2026",
-    "fetched_at": 1780601017,
+    "fetched_at": 1780631883,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301143,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 34.56,
-      "UUSkins": 25.54
+      "CSFloat": 33.91,
+      "UUSkins": 24.73
     },
-    "price": 25.54,
+    "price": 23.66,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -6810,10 +6816,15 @@
   "https://csgoskins.gg/items/sticker-teses-foil-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-teses-foil-cologne-2026",
-    "fetched_at": 1780428159,
-    "markets": {},
-    "price": null,
-    "status": "error: HTTP 403",
+    "fetched_at": 1780631937,
+    "market_sources": {
+      "UUSkins": "CSGOSkins"
+    },
+    "markets": {
+      "UUSkins": 1.48
+    },
+    "price": 1.48,
+    "status": "ok",
     "uuskins_status": "uuskins no_match code 0"
   },
   "https://csgoskins.gg/items/sticker-teses-gold-cologne-2026": {
@@ -6824,8 +6835,8 @@
   "https://csgoskins.gg/items/sticker-teses-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-teses-holo-cologne-2026",
-    "fetched_at": 1780600994,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631884,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312673,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -6833,9 +6844,9 @@
     },
     "markets": {
       "CSFloat": 10.0,
-      "UUSkins": 3.74
+      "UUSkins": 3.7
     },
-    "price": 3.74,
+    "price": 3.7,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -6870,8 +6881,8 @@
   "https://csgoskins.gg/items/sticker-the-mongolz-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-the-mongolz-holo-cologne-2026",
-    "fetched_at": 1780601005,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631884,
+    "last_error": "error: HTTP 429",
     "last_error_at": 1780312673,
     "market_sources": {
       "CSFloat": "SkinSniper",
@@ -6903,15 +6914,15 @@
   "https://csgoskins.gg/items/sticker-thunder-downunder-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-thunder-downunder-holo-cologne-2026",
-    "fetched_at": 1780601041,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631884,
+    "last_error": "error: HTTP 429",
     "market_sources": {
       "UUSkins": "UUSkins"
     },
     "markets": {
-      "UUSkins": 22.8
+      "UUSkins": 22.72
     },
-    "price": 22.8,
+    "price": 22.72,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -6957,15 +6968,15 @@
   "https://csgoskins.gg/items/sticker-tjp-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-tjp-holo-cologne-2026",
-    "fetched_at": 1780601010,
+    "fetched_at": 1780631886,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312673,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 10.53,
+      "CSFloat": 4.79,
       "UUSkins": 3.11
     },
     "price": 3.11,
@@ -7086,18 +7097,18 @@
   "https://csgoskins.gg/items/sticker-tyloo-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-tyloo-holo-cologne-2026",
-    "fetched_at": 1780601009,
+    "fetched_at": 1780631886,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312673,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 11.2,
-      "UUSkins": 8.57
+      "CSFloat": 10.53,
+      "UUSkins": 8.67
     },
-    "price": 8.57,
+    "price": 8.67,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -7107,9 +7118,16 @@
     "status": "no_trusted_price"
   },
   "https://csgoskins.gg/items/sticker-ultimate-foil-cologne-2026": {
-    "fetched_at": 1780301230,
-    "price": null,
-    "status": "error: HTTP 403"
+    "fetched_at": 1780631937,
+    "market_sources": {
+      "UUSkins": "CSGOSkins"
+    },
+    "markets": {
+      "UUSkins": 4.43
+    },
+    "price": 4.43,
+    "status": "ok",
+    "uuskins_status": "ok"
   },
   "https://csgoskins.gg/items/sticker-ultimate-gold-cologne-2026": {
     "fetched_at": 1780202171,
@@ -7119,18 +7137,18 @@
   "https://csgoskins.gg/items/sticker-ultimate-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-ultimate-holo-cologne-2026",
-    "fetched_at": 1780601028,
+    "fetched_at": 1780631887,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312674,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 2.4,
-      "UUSkins": 1.23
+      "CSFloat": 1.35,
+      "UUSkins": 1.22
     },
-    "price": 1.23,
+    "price": 1.18,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -7258,18 +7276,18 @@
   "https://csgoskins.gg/items/sticker-vitality-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-vitality-holo-cologne-2026",
-    "fetched_at": 1780601013,
+    "fetched_at": 1780631886,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301146,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 53.67,
+      "CSFloat": 26.83,
       "UUSkins": 20.67
     },
-    "price": 20.67,
+    "price": 20.54,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -7313,9 +7331,18 @@
     "status": "error: HTTP 403"
   },
   "https://csgoskins.gg/items/sticker-westmelon-foil-cologne-2026": {
-    "fetched_at": 1780301232,
-    "price": null,
-    "status": "error: HTTP 403"
+    "fallback_status": "ok",
+    "fallback_url": "https://skinsniper.com/stickers/sticker-westmelon-foil-cologne-2026",
+    "fetched_at": 1780631935,
+    "market_sources": {
+      "CSFloat": "SkinSniper"
+    },
+    "markets": {
+      "CSFloat": 1.19
+    },
+    "price": 1.19,
+    "status": "ok",
+    "uuskins_status": "uuskins no_match code 0"
   },
   "https://csgoskins.gg/items/sticker-westmelon-gold-cologne-2026": {
     "fetched_at": 1780202632,
@@ -7530,12 +7557,12 @@
   "https://csgoskins.gg/items/sticker-xielo-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-xielo-holo-cologne-2026",
-    "fetched_at": 1780601020,
+    "fetched_at": 1780631887,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780315107,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
       "CSFloat": 1.95,
@@ -7670,17 +7697,17 @@
   "https://csgoskins.gg/items/sticker-z4kr-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-z4kr-holo-cologne-2026",
-    "fetched_at": 1780600998,
+    "fetched_at": 1780631887,
     "last_error": "error: HTTP 403",
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 4.15,
-      "UUSkins": 2.22
+      "CSFloat": 3.75,
+      "UUSkins": 1.84
     },
-    "price": 2.22,
+    "price": 1.84,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -7702,17 +7729,17 @@
   "https://csgoskins.gg/items/sticker-zero-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-zero-holo-cologne-2026",
-    "fetched_at": 1780601000,
-    "last_error": "error: HTTP 403",
+    "fetched_at": 1780631887,
+    "last_error": "error: HTTP 429",
     "market_sources": {
       "CSFloat": "SkinSniper",
       "UUSkins": "UUSkins"
     },
     "markets": {
       "CSFloat": 20.0,
-      "UUSkins": 3.55
+      "UUSkins": 3.77
     },
-    "price": 3.55,
+    "price": 3.77,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -7770,18 +7797,18 @@
   "https://csgoskins.gg/items/sticker-zorte-holo-cologne-2026": {
     "fallback_status": "no_skinsniper_market_detail",
     "fallback_url": "https://skinsniper.com/stickers/sticker-zorte-holo-cologne-2026",
-    "fetched_at": 1780601003,
+    "fetched_at": 1780631888,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780312674,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 5.42,
+      "CSFloat": 1.49,
       "UUSkins": 1.76
     },
-    "price": 1.76,
+    "price": 1.49,
     "status": "ok",
     "uuskins_status": "ok"
   },
@@ -7836,15 +7863,15 @@
   "https://csgoskins.gg/items/sticker-zywoo-holo-cologne-2026": {
     "fallback_status": "ok",
     "fallback_url": "https://skinsniper.com/stickers/sticker-zywoo-holo-cologne-2026",
-    "fetched_at": 1780601032,
+    "fetched_at": 1780631888,
     "last_error": "error: HTTP 403",
     "last_error_at": 1780301152,
     "market_sources": {
-      "CSFloat": "SkinSniper",
-      "UUSkins": "UUSkins"
+      "CSFloat": "CSGOSkins",
+      "UUSkins": "CSGOSkins"
     },
     "markets": {
-      "CSFloat": 30.0,
+      "CSFloat": 24.0,
       "UUSkins": 21.85
     },
     "price": 21.85,

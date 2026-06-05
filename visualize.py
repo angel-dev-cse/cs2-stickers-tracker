@@ -1169,6 +1169,12 @@ def row_to_record(row: pd.Series) -> dict:
         "team": team,
         "price_tokens": price_tokens,
         "usd_price": safe_float(val("usd_price"), 0) or 0,
+        "effective_price_tokens": safe_float(val("effective_price_tokens"), None),
+        "effective_usd_price": safe_float(val("effective_usd_price"), None),
+        "effective_price_source": str(val("effective_price_source", "")),
+        "effective_uses_second_market": safe_bool(val("effective_uses_second_market", False)),
+        "effective_discount_to_steam_pct": safe_float(val("effective_discount_to_steam_pct"), None),
+        "buy_from": str(val("buy_from", "")),
         "recent_return_pct": safe_float(val("recent_return_pct"), None),
         "hist_min": hist_min,
         "hist_max": hist_max,
@@ -1180,7 +1186,8 @@ def row_to_record(row: pd.Series) -> dict:
         "history_span_hours": safe_float(val("history_span_hours"), None),
         "snapshot_points": safe_float(val("snapshot_points"), None),
         "suggested_size": str(val("suggested_size", "")),
-        "entry_tier": str(val("entry_tier", "")),
+        "entry_tier": str(val("effective_entry_tier", val("entry_tier", "")) or val("entry_tier", "")),
+        "effective_entry_tier": str(val("effective_entry_tier", "")),
         "flood_risk": str(val("flood_risk", "")),
         "quality_score": safe_float(val("quality_score"), None),
         "history_score": safe_float(val("history_score"), None),
@@ -1189,6 +1196,8 @@ def row_to_record(row: pd.Series) -> dict:
         "value_edge_score": safe_float(val("value_edge_score"), None),
         "expected_return_pct": safe_float(val("expected_return_pct"), None),
         "expected_return_score": safe_float(val("expected_return_score"), None),
+        "effective_expected_return_pct": safe_float(val("effective_expected_return_pct"), None),
+        "effective_expected_return_score": safe_float(val("effective_expected_return_score"), None),
         "robust_reference_price": safe_float(val("robust_reference_price"), None),
         "robust_peak_price": safe_float(val("robust_peak_price"), None),
         "discount_from_robust_peak_pct": safe_float(val("discount_from_robust_peak_pct"), None),
@@ -1206,6 +1215,14 @@ def row_to_record(row: pd.Series) -> dict:
         "discount_from_high_pct": safe_float(val("discount_from_high_pct"), None),
         "upside_to_high_pct": safe_float(val("upside_to_high_pct"), None),
         "position_in_range": safe_float(val("position_in_range"), None),
+        "effective_discount_from_high_pct": safe_float(val("effective_discount_from_high_pct"), None),
+        "effective_upside_to_high_pct": safe_float(val("effective_upside_to_high_pct"), None),
+        "effective_position_in_range": safe_float(val("effective_position_in_range"), None),
+        "effective_downside_to_floor_pct": safe_float(val("effective_downside_to_floor_pct"), None),
+        "effective_downside_risk_score": safe_float(val("effective_downside_risk_score"), None),
+        "effective_entry_score": safe_float(val("effective_entry_score"), None),
+        "effective_entry_change_score": safe_float(val("effective_entry_change_score"), None),
+        "effective_price_percentile": safe_float(val("effective_price_percentile"), None),
         "crowding_percentile": safe_float(val("crowding_percentile"), None),
         "flood_risk_score": safe_float(val("flood_risk_score"), None),
         "latest_popularity": safe_float(val("latest_popularity"), None),
@@ -1259,10 +1276,12 @@ def write_priority_csv(df: pd.DataFrame) -> None:
     cols = [
         "priority_rank", "priority_score", "priority_tier", "verdict", "sticker", "category", "variant",
         "sticker_type", "catalog_type", "player_name", "team", "team_name",
-        "price_tokens", "usd_price", "suggested_size", "entry_tier", "flood_risk",
+        "price_tokens", "usd_price", "effective_price_tokens", "effective_usd_price",
+        "effective_price_source", "effective_uses_second_market", "effective_discount_to_steam_pct",
+        "buy_from", "suggested_size", "entry_tier", "effective_entry_tier", "flood_risk",
         "hist_last", "hist_min", "hist_max", "hist_points", "history_span_hours", "snapshot_points",
         "quality_score", "history_score", "decision_score", "trend_score", "value_edge_score",
-        "expected_return_pct", "demand_momentum_score", "demand_price_divergence_score",
+        "expected_return_pct", "effective_expected_return_pct", "demand_momentum_score", "demand_price_divergence_score",
         "prediction_confidence", "score_confidence", "quick_reason", "risk_note", "action_note",
         "second_market_latest_low_usd", "second_market_previous_low_usd", "second_market_low_usd",
         "second_market_high_usd", "second_market_change_pct", "second_market_slope_pct",
@@ -5293,6 +5312,7 @@ let inventoryItems = [];
 let inventoryViewMode = 'grid';
 let inventorySortMode = localStorage.getItem('cs2StickerInventorySort') || 'date_desc';
 let inventoryApiOnline = false;
+let inventoryAutoFetchStarted = false;
 let selectedInventoryIds = new Set();
 let renderSequence = 0;
 let favoriteIds = new Set(Array.isArray(embeddedFavoriteIds) ? embeddedFavoriteIds.map(String) : []);
@@ -5510,6 +5530,36 @@ function trustedThirdPartyLow(r) {
     }
   }
   return candidates.length ? Math.min(...candidates) : null;
+}
+function recordMarketValue(r) {
+  const steamUsd = num(r?.usd_price);
+  const steamTokens = num(r?.price_tokens);
+  const best = bestSecondMarketSource(r);
+  const useSecondMarket = best.price !== null && (steamUsd === null || best.price < steamUsd - 0.005);
+  if (useSecondMarket) {
+    return {
+      usd: best.price,
+      tokens: usdToTokens(best.price),
+      source: best.label,
+      sourceType: '2P',
+      isSecondMarket: true,
+    };
+  }
+  return {
+    usd: steamUsd,
+    tokens: steamTokens,
+    source: 'Steam',
+    sourceType: 'Steam',
+    isSecondMarket: false,
+  };
+}
+function recordMarketValueLabel(value) {
+  const source = value?.source || value?.currentSource;
+  const isSecondMarket = Boolean(value?.isSecondMarket ?? value?.currentIsSecondMarket);
+  if (!source) return 'price source unavailable';
+  return isSecondMarket
+    ? `${source} 2P low`
+    : 'Steam fallback';
 }
 function csgoskinsDiscountPct(r) {
   const csgPrice = trustedThirdPartyLow(r);
@@ -6184,9 +6234,9 @@ function marketCounterHtml(r, mode='full') {
   return `<span class="market-count ${mode}" title="${esc(title)}"><span class="market-count-dot"></span><b>${esc(label)}</b>${extra}</span>`;
 }
 const metricDescriptions = {
-  'P/L':'Profit or loss compared with the known purchase price saved in inventory. Blank buy prices are excluded.',
+  'P/L':'Profit or loss compared with the known purchase price saved in inventory. Uses the current lowest trusted 2P price first, then Steam if no 2P price is available.',
   'Known Cost':'The buy price you entered for the inventory row or portfolio summary.',
-  'Current':'Latest dashboard market value using collected Steam-side price data.',
+  'Current':'Current market value using the lowest trusted 2P price when available, with Steam as the fallback.',
   'Expected':'Model-estimated upside from current price, based on discount, trend, demand, quality and risk features.',
   'Value Edge':'Combined relative-value score. Higher means the sticker looks cheaper versus its history and peers after risk adjustments.',
   'Quality':'Manual visual grade from scores.csv where available, with neutral fallback for unscored stickers.',
@@ -6198,7 +6248,7 @@ const metricDescriptions = {
   'Flood':'Model estimate of listing/supply pressure. Lower flood is usually healthier for upside.',
   'Discount':'How far current price is below the collected historical high.',
   'Change':'Most recent price change from snapshots/history.',
-  'Entry':'Price bucket. Cheaper entries allow wider diversification, but still need quality and demand.',
+  'Entry':'Price bucket using the lowest trusted market price when available, with Steam as fallback. Cheaper entries allow wider diversification, but still need quality and demand.',
   'Priority':'Final ranking score combining the model signals.',
   'Size':'Suggested maximum buy size from the model.',
   'Confidence':'Prediction confidence from available data/history.',
@@ -6633,7 +6683,7 @@ function inventoryContextHtml(item, r) {
   return `<div class="inventory-context-panel" aria-label="Inventory purchase context">
     <div class="inventory-context-item"><span>Account</span><b>${esc(item.steam_account || '-')}</b><small>${esc(item.acquired_at || 'No buy date')}</small></div>
     <div class="inventory-context-item"><span>Buying Price</span><b>${esc(boughtLabel(item))}</b><small>${esc(metricDescriptions['Known Cost'])}</small></div>
-    <div class="inventory-context-item"><span>Current Value</span><b>${money(pnl.currentUsd)}</b><small>${tokens(pnl.currentTokens)} tokens now</small></div>
+    <div class="inventory-context-item"><span>Current Value</span><b>${money(pnl.currentUsd)}</b><small>${tokens(pnl.currentTokens)} tokens via ${esc(recordMarketValueLabel(pnl))}</small></div>
     <div class="inventory-context-item"><span>P/L</span><b class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}">${esc(pnlValue)}</b><small>${esc(metricDescriptions['P/L'])}</small></div>
     <div class="inventory-context-item"><span>Buy Guard</span><b class="inventory-pnl ${guardClass}">${esc(guardText)}</b><small>${guard ? `${fmt(guard.pct, 1)}% vs trusted 2P low ${money(guard.best)}` : 'Refresh 2P prices first'}</small></div>
   </div>`;
@@ -6830,7 +6880,13 @@ function setupPriceFetch() {
       .filter(r => isFavorite(r) && csgoskinsFetchable(r))
       .sort((a, b) => normalizedVariant(a).localeCompare(normalizedVariant(b)) || Number(a.priority_rank || 9999) - Number(b.priority_rank || 9999));
     await fetchCsgoskinsPricesFor(favorites, 'favorite stickers', event.currentTarget);
-    const suggested = suggested2pFetchRows(true);
+    const fetchedIds = new Set(favorites.map(favoriteId));
+    const inventoryRows = inventory2pFetchRows(fetchedIds);
+    if (inventoryRows.length) {
+      await fetchCsgoskinsPricesFor(inventoryRows, 'inventory stickers');
+      inventoryRows.forEach(r => fetchedIds.add(favoriteId(r)));
+    }
+    const suggested = suggested2pFetchRows(false).filter(r => !fetchedIds.has(favoriteId(r)));
     if (suggested.length) {
       await fetchCsgoskinsPricesFor(suggested, 'suggested stickers');
     }
@@ -7221,7 +7277,11 @@ function syncCostInputs(tokensId, usdId, source) {
 
 function currentCostForRecord(r) {
   if (!r) return {bought_tokens:'', bought_usd:''};
-  return normalizeCostFields(hasNum(r.price_tokens) ? Math.round(Number(r.price_tokens)) : '', hasNum(r.usd_price) ? Number(r.usd_price).toFixed(2) : '');
+  const current = recordMarketValue(r);
+  return normalizeCostFields(
+    current.tokens !== null ? Math.round(Number(current.tokens)) : '',
+    current.usd !== null ? Number(current.usd).toFixed(2) : ''
+  );
 }
 
 function inventoryFields() {
@@ -7377,8 +7437,9 @@ function updateInventorySelectionUi(visibleItems) {
 }
 
 function inventoryPnl(item, r) {
-  const currentTokens = num(r?.price_tokens);
-  const currentUsd = num(r?.usd_price);
+  const current = recordMarketValue(r);
+  const currentTokens = current.tokens;
+  const currentUsd = current.usd;
   const boughtTokens = num(item.bought_tokens);
   const boughtUsd = num(item.bought_usd);
   const tokenPct = currentTokens !== null && boughtTokens !== null && boughtTokens > 0
@@ -7388,7 +7449,18 @@ function inventoryPnl(item, r) {
     ? ((currentUsd - boughtUsd) / boughtUsd) * 100
     : null;
   const usdAbs = currentUsd !== null && boughtUsd !== null && boughtUsd > 0 ? currentUsd - boughtUsd : null;
-  return {currentTokens, currentUsd, boughtTokens, boughtUsd, tokenPct, usdPct, usdAbs};
+  return {
+    currentTokens,
+    currentUsd,
+    currentSource: current.source,
+    currentSourceType: current.sourceType,
+    currentIsSecondMarket: current.isSecondMarket,
+    boughtTokens,
+    boughtUsd,
+    tokenPct,
+    usdPct,
+    usdAbs,
+  };
 }
 
 function pnlClass(value) {
@@ -7445,7 +7517,7 @@ function inventoryItemListHtml(item, index) {
     <td data-label="Sticker"><div class="inventory-sticker-cell"><img src="${esc(image)}" loading="lazy" decoding="async" onerror="this.style.visibility='hidden'" /><div><div class="inventory-item-title">#${index + 1} ${esc(title)}</div><div class="inventory-item-sub">${esc(r?.variant || item.variant || '-')} | ${esc(r?.team || r?.player_name || r?.team_name || '')}</div></div></div></td>
     <td data-label="Account">${esc(item.steam_account || '-')}</td>
     <td data-label="Bought">${esc(boughtLabel(item))}<div class="inventory-item-sub">${esc(item.acquired_at || '')}</div></td>
-    <td data-label="Current">${money(pnl.currentUsd)}<div class="inventory-item-sub">${tokens(pnl.currentTokens)} tokens</div></td>
+    <td data-label="Current">${money(pnl.currentUsd)}<div class="inventory-item-sub">${tokens(pnl.currentTokens)} tokens | ${esc(recordMarketValueLabel(pnl))}</div></td>
     <td data-label="P/L"><span class="inventory-pnl ${pnlClass(pnl.usdPct ?? pnl.tokenPct)}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlValue)}</span><div class="inventory-item-sub">${inventoryOverpayBadgeHtml(item, r)}</div></td>
     <td data-label="Market">${market}<div class="inventory-item-sub">${marketCounterHtml(r, 'mini')} | Low ${tokens(r?.hist_min)} | High ${tokens(r?.hist_max)}</div></td>
     <td data-label="Actions"><div class="inventory-actions"><button class="mini-btn" type="button" data-inventory-details="${esc(item.inventory_id)}">Details</button><button class="mini-btn" type="button" data-edit-inventory="${esc(item.inventory_id)}">Edit</button><button class="mini-btn danger" type="button" data-delete-inventory="${esc(item.inventory_id)}">Delete</button></div></td>
@@ -7471,7 +7543,7 @@ function inventoryItemCardHtml(item, index) {
       <div class="inventory-card-title" title="${esc(title)}">#${index + 1} ${esc(title)}</div>
       <div class="inventory-card-meta"><span>${esc(account)}</span><span>|</span><span>${esc(item.acquired_at || 'No date')}</span></div>
       <div class="inventory-card-market">
-        <span class="inventory-current-price" title="${esc(metricDescriptions.Current)}">${money(pnl.currentUsd)}</span>
+        <span class="inventory-current-price" title="${esc(`${metricDescriptions.Current}\nSource: ${recordMarketValueLabel(pnl)}`)}">${money(pnl.currentUsd)}</span>
         <span class="inventory-cost-pill" title="${esc(`Known cost: ${bought}`)}"><span>Cost</span><b>${esc(boughtShortLabel(item))}</b></span>
         <span class="inventory-pnl-pill inventory-pnl ${pnlCls}" title="${esc(metricDescriptions['P/L'])}">${esc(pnlText)}</span>
       </div>
@@ -7590,6 +7662,32 @@ function suggested2pFetchRows(excludeFavorites=false) {
       seen.add(id);
       return true;
     });
+}
+
+function inventory2pFetchRows(excludeIds=new Set()) {
+  const seen = new Set(excludeIds);
+  const rows = [];
+  inventoryItems.forEach(item => {
+    const r = inventoryRecord(item);
+    if (!r || !csgoskinsFetchable(r)) return;
+    const id = favoriteId(r);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    rows.push(r);
+  });
+  return rows;
+}
+
+function autoFetchInventory2pPrices() {
+  if (inventoryAutoFetchStarted || !inventoryApiOnline || priceFetchBusy) return;
+  const rows = inventory2pFetchRows()
+    .filter(r => trustedThirdPartyLow(r) === null || num(r.second_market_latest_low_usd) === null)
+    .slice(0, 80);
+  if (!rows.length) return;
+  inventoryAutoFetchStarted = true;
+  setTimeout(() => {
+    fetchCsgoskinsPricesFor(rows, 'inventory stickers');
+  }, 500);
 }
 
 function renderPortfolioFocus() {
@@ -7751,6 +7849,7 @@ async function loadInventory() {
   }
   renderInventory();
   applyFiltersPreservingScroll();
+  autoFetchInventory2pPrices();
 }
 
 async function persistInventory() {
